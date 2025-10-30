@@ -18,3 +18,4 @@ data
 *.db
 catboost_info
 *.pyc
+processed_images
