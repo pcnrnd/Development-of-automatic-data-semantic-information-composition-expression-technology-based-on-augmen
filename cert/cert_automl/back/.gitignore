@@ -1,0 +1,97 @@
+# 가상 환경
+/.venv
+/venv/
+/.virtualenv/
+/env/
+
+# 파이썬 관련
+/__pycache__/
+__pycache__
+*.py[cod]
+*.so
+.Python
+
+# 배포 및 패키징
+/dist/
+/build/
+/*.egg-info/
+*.egg
+*.manifest
+*.spec
+
+# 환경 변수
+/.env
+/.env.*
+.env.local
+.env.development
+.env.production
+
+# IDE 설정
+/.vscode/
+/.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# 로그 파일
+*.log
+logs/
+log/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 데이터베이스 파일 (모든 위치)
+*.db
+*.sqlite
+*.sqlite3
+database/
+**/database/
+**/database.db
+**/database.sqlite
+**/database.sqlite3
+
+# 데이터베이스 관련 디렉토리
+data_prepro/database/
+old/database/
+
+# 대용량 파일 (100MB 이상)
+*.zip
+*.tar.gz
+*.rar
+*.7z
+*.iso
+*.gz
+*.bz2
+
+# 임시 파일
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+
+# 의존성 디렉토리
+/node_modules/
+/bower_components/
+
+# 테스트 커버리지
+/coverage/
+.coverage
+htmlcov/
+
+# 문서 빌드
+/docs/_build/
+/site/
+
+data
+
+# 가상환경
+.test_venv
+catboost_info/
+
+data
+venv
+.venv
+.augmentation
