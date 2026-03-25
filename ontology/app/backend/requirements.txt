@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+neo4j
+rdflib
+pyshacl
+pydantic
+python-multipart
+numpy
+scikit-learn

@@ -1,0 +1,6 @@
+.venv/
+.cursor/debug.
+__pycache__
+*.pyc
+.env
+.cursor
