@@ -64,8 +64,3 @@ npm run dev
 - `POST /v1/microservices/{id}/actions/recover` - 서비스 상태를 healthy로
 - `POST /v1/microservices/{id}/actions/traffic` - latency/throughput/errorRate 조정
 - `GET /v1/observability/events` - 최근 상태 변경 이벤트
-
-## 트러블슈팅
-- **FastAPI 포트 충돌(WinError 10013)**: 다른 포트로 변경(예: `--port 8002`) 후 `.env.local`도 동기화
-- **Next 500 에러**: `frontend/.env.local`에 `FASTAPI_BASE_URL`이 제대로 설정됐는지 확인
-- **API 호출 실패**: FastAPI가 실행 중인지(`http://localhost:8001/healthz` 직접 접속)
