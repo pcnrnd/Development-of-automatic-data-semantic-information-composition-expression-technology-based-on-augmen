@@ -60,7 +60,7 @@ npm install && npm run dev
 
 ---
 
-## ontology — 제조 온톨로지 플랫폼
+## mes_ontology — 제조 온톨로지 플랫폼
 
 제조 설비·공정 데이터를 지식 그래프로 구성·분석하는 플랫폼
 
