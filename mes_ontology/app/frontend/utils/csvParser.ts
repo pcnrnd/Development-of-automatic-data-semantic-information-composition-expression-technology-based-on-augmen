@@ -21,44 +21,81 @@ const MAX_ROWS = 5000;
  * 실패 시 { ok: false, error }로 사유를 반환해 UI에서 안내할 수 있게 합니다.
  */
 export async function parseCsvForAutoml(file: File): Promise<ParseCsvForAutomlResult> {
-  const text = await file.text();
+  const raw = await file.text();
+  // BOM 제거
+  const text = raw.replace(/^\uFEFF/, '');
   const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
   if (lines.length < 2) return { ok: false, error: '파일이 비어 있거나 헤더 외 데이터 행이 없습니다.' };
 
   const delimiter = lines[0].includes(';') ? ';' : ',';
-  const headers = lines[0].split(delimiter).map((h) => h.trim());
+  const stripQuotes = (s: string) => s.replace(/^"|"$/g, '');
+  const headers = lines[0].split(delimiter).map((h) => stripQuotes(h.trim()));
   if (headers.length < 2) return { ok: false, error: '헤더(컬럼)가 2개 이상이어야 합니다. 마지막 컬럼은 타깃(레이블)으로 사용됩니다.' };
 
-  const featureNames = headers.slice(0, -1);
-  const rows: number[][] = [];
-  let missingCount = 0;
+  // 1단계: 전체 행을 문자열로 파싱
+  const rawRows: string[][] = [];
+  for (let i = 1; i < lines.length && rawRows.length < MAX_ROWS; i++) {
+    const cells = lines[i].split(delimiter).map((c) => stripQuotes(c.trim()));
+    if (cells.length === headers.length) rawRows.push(cells);
+  }
+  if (rawRows.length < 2) return { ok: false, error: '유효한 데이터 행이 2행 미만입니다. 컬럼 수가 헤더와 일치하는지 확인해 주세요.' };
 
-  for (let i = 1; i < lines.length && rows.length < MAX_ROWS; i++) {
-    const cells = lines[i].split(delimiter).map((c) => c.trim());
-    if (cells.length !== headers.length) continue;
-
-    const row: number[] = [];
-    let valid = true;
-    for (let c = 0; c < cells.length; c++) {
-      const num = Number(cells[c]);
-      if (Number.isNaN(num)) {
-        missingCount++;
-        valid = false;
-        break;
-      }
-      row.push(num);
-    }
-    if (valid && row.length) rows.push(row);
+  // 2단계: 숫자 변환 가능한 feature 컬럼만 추출 (날짜·문자열 컬럼 자동 제외)
+  const targetColIdx = headers.length - 1;
+  const featureColIdxs: number[] = [];
+  for (let c = 0; c < targetColIdx; c++) {
+    const hasNumeric = rawRows.some((row) => row[c] !== '' && !Number.isNaN(Number(row[c])));
+    if (hasNumeric) featureColIdxs.push(c);
+  }
+  if (featureColIdxs.length === 0) {
+    return { ok: false, error: '숫자형 피처 컬럼이 없습니다. 날짜·문자열 전용 컬럼은 자동으로 제외됩니다.' };
   }
 
-  if (rows.length < 2) return { ok: false, error: '숫자만 있는 유효한 데이터 행이 2행 미만입니다. 모든 셀이 숫자인지, 구분자는 쉼표(,) 또는 세미콜론(;)인지 확인해 주세요.' };
+  // 3단계: target 컬럼 인코딩 — 문자열이면 레이블 인코딩, 숫자면 그대로 사용
+  const targetRaw = rawRows.map((row) => row[targetColIdx]);
+  const allNumericTarget = targetRaw.every((v) => v !== '' && !Number.isNaN(Number(v)));
+  let targetEncoded: number[];
+  if (allNumericTarget) {
+    targetEncoded = targetRaw.map(Number);
+  } else {
+    const labelMap: Record<string, number> = {};
+    let nextId = 0;
+    targetEncoded = targetRaw.map((v) => {
+      if (!(v in labelMap)) labelMap[v] = nextId++;
+      return labelMap[v];
+    });
+  }
 
-  const features = rows.map((row) => row.slice(0, -1));
-  const target = rows.map((row) => row[row.length - 1]);
+  // 4단계: feature 행렬 구성 (비숫자 셀이 있는 행만 제외)
+  const features: number[][] = [];
+  const target: number[] = [];
+  let missingCount = 0;
 
+  for (let r = 0; r < rawRows.length; r++) {
+    const row = rawRows[r];
+    const featureRow: number[] = [];
+    let rowValid = true;
+    for (const c of featureColIdxs) {
+      const n = Number(row[c]);
+      if (row[c] === '' || Number.isNaN(n)) {
+        missingCount++;
+        rowValid = false;
+        break;
+      }
+      featureRow.push(n);
+    }
+    if (rowValid) {
+      features.push(featureRow);
+      target.push(targetEncoded[r]);
+    }
+  }
+
+  if (features.length < 2) return { ok: false, error: '숫자형 유효 행이 2행 미만입니다. 데이터를 확인해 주세요.' };
+
+  const featureNames = featureColIdxs.map((c) => headers[c]);
   const profile: DataProfile = {
     features: featureNames,
-    recordsCount: rows.length,
+    recordsCount: features.length,
     noiseLevel: 0.15,
     seasonality: true,
     missingValues: Math.min(100, missingCount),
