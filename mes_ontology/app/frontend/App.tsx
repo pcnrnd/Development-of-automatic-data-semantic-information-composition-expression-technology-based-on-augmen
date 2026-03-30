@@ -30,10 +30,12 @@ import {
   BarChart3,
   SlidersHorizontal,
   Shuffle,
+  AlertTriangle,
 } from 'lucide-react';
 import DashboardHeader from './components/DashboardHeader';
 import AppSidebar, { type NavId } from './components/AppSidebar';
 import OntologyVisualizer from './components/OntologyVisualizer';
+import OntologyGraph from './components/OntologyGraph';
 import { IndustryType, DataProfile, MatchingResult } from './types';
 
 /** 산업별 데모용 프로파일 (업로드 없을 때 추천 결과가 산업에 따라 달라지도록) */
@@ -78,7 +80,7 @@ function getMockProfileForIndustry(industry: IndustryType): DataProfile {
       };
   }
 }
-import { analysisService, getTemplateRecommendationsByColumns } from './services/analysisService';
+import { analysisService, getTemplateRecommendationsByColumns, getEnhancedTemplateRecommendations } from './services/analysisService';
 import { automlFit, type AutoMLFitResult } from './services/backendApi';
 import { parseCsvForAutoml } from './utils/csvParser';
 import {
@@ -360,11 +362,11 @@ const App: React.FC = () => {
     return { headers: dataPreview.headers, rows: afterRows, labelMap };
   }, [dataPreview, preprocConfig.missingStrategy]);
 
-  /** 업로드된 파일의 컬럼명 기반으로 온톨로지 템플릿 추천 (전체 분석 없이 즉시 표시) */
-  const uploadTemplateRecommendations = useMemo(() => {
-    if (!dataPreview) return [];
-    return getTemplateRecommendationsByColumns(dataPreview.headers, REFERENCE_TEMPLATES, 3);
-  }, [dataPreview]);
+  /** 향상된 온톨로지 템플릿 추천: 산업 컨텍스트 + 데이터 타입 패턴 + ISA-95 경고 + 커버리지 포함 */
+  const { recommendations: uploadTemplateRecommendations, isa95Warning: uploadIsa95Warning } = useMemo(() => {
+    if (!dataPreview) return { recommendations: [], isa95Warning: null };
+    return getEnhancedTemplateRecommendations(dataPreview.headers, dataPreview.rows, REFERENCE_TEMPLATES, industry, 3);
+  }, [dataPreview, industry]);
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50">
@@ -451,18 +453,21 @@ const App: React.FC = () => {
 
         {/* 1. 데이터 준비 */}
         {currentNav === 'data' && (
-          <div key="data" className="p-4 sm:p-6 lg:p-8 max-w-3xl">
-            <section className="bg-white p-5 sm:p-6 rounded-xl border border-slate-200 shadow-sm">
-              <h2 className="text-lg font-bold mb-1 flex items-center gap-2 text-slate-800">
-                <Upload className="w-5 h-5 text-indigo-600" />
-                데이터 준비
-              </h2>
+          <div key="data" className="p-4 sm:p-6 lg:p-8">
+            <h1 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
+              <Upload className="w-5 h-5 text-indigo-600" />
+              데이터 준비
+            </h1>
+
+            {/* 상단: 데이터 준비 컨트롤 */}
+            <section className="mb-4 bg-white rounded-xl border border-slate-200 shadow-sm p-5 sm:p-6">
               <p className="text-xs text-slate-500 mb-4 leading-relaxed">
                 분석에 사용할 산업과 공정 데이터를 설정합니다. 다음 단계에서 분석 실행 메뉴로 이동해 실행하세요.
               </p>
-              <div className="space-y-4">
-                <div>
-                  <label htmlFor="industry-select" className="block text-xs font-semibold text-slate-600 mb-1">산업</label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 items-stretch">
+                {/* 산업 선택 */}
+                <div className="flex flex-col">
+                  <label htmlFor="industry-select" className="text-xs font-semibold text-slate-600 mb-1">산업</label>
                   <select
                     id="industry-select"
                     className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-500/20"
@@ -474,9 +479,13 @@ const App: React.FC = () => {
                       <option key={type} value={type}>{type}</option>
                     ))}
                   </select>
+                  <div className="flex-1" />
+                  <p className="text-[10px] text-slate-400 mt-3">다음: 사이드바에서 <strong>전처리 &amp; 증강</strong>으로 이동해 전처리 설정 후 분석을 실행하세요.</p>
                 </div>
-                <div>
-                  <span className="block text-xs font-semibold text-slate-600 mb-2">공정 데이터</span>
+
+                {/* 파일 업로드 */}
+                <div className="flex flex-col">
+                  <span className="text-xs font-semibold text-slate-600 mb-1">공정 데이터</span>
                   <input
                     ref={processFileInputRef}
                     id="process-data-upload"
@@ -495,7 +504,7 @@ const App: React.FC = () => {
                   />
                   <label
                     htmlFor="process-data-upload"
-                    className={`block border-2 border-dashed rounded-xl p-6 sm:p-8 text-center transition-all cursor-pointer group ${
+                    className={`flex-1 flex items-center gap-4 border-2 border-dashed rounded-xl px-5 py-4 transition-all cursor-pointer group ${
                       uploadedProcessFile
                         ? 'border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50'
                         : 'border-slate-200 bg-slate-50 hover:bg-slate-100'
@@ -503,130 +512,256 @@ const App: React.FC = () => {
                   >
                     {uploadedProcessFile ? (
                       <>
-                        <div className="w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-3 border border-emerald-200">
-                          <CheckCircle2 className="w-6 h-6 text-emerald-600" />
+                        <div className="shrink-0 w-10 h-10 bg-emerald-100 rounded-full flex items-center justify-center border border-emerald-200">
+                          <CheckCircle2 className="w-5 h-5 text-emerald-600" />
                         </div>
-                        <p className="text-sm font-semibold text-slate-800 truncate max-w-full px-2">{uploadedProcessFile.name}</p>
-                        <p className="text-[10px] text-slate-500 mt-1">{(uploadedProcessFile.size / 1024).toFixed(1)} KB · 클릭하여 다른 파일 선택</p>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-slate-800 truncate">{uploadedProcessFile.name}</p>
+                          <p className="text-[10px] text-slate-500 mt-0.5">{(uploadedProcessFile.size / 1024).toFixed(1)} KB · 클릭하여 다른 파일 선택</p>
+                        </div>
                         <button
                           type="button"
                           onClick={(ev) => { ev.preventDefault(); ev.stopPropagation(); setUploadedProcessFile(null); setUploadParseError(null); }}
-                          className="mt-3 text-xs font-semibold text-rose-600 hover:text-rose-700"
+                          className="shrink-0 text-xs font-semibold text-rose-600 hover:text-rose-700"
                         >
-                          파일 제거
+                          제거
                         </button>
                       </>
                     ) : (
                       <>
-                        <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center mx-auto mb-3 shadow-sm border border-slate-100 group-hover:scale-110 transition-transform">
-                          <Upload className="w-6 h-6 text-indigo-600" />
+                        <div className="shrink-0 w-10 h-10 bg-white rounded-full flex items-center justify-center shadow-sm border border-slate-100 group-hover:scale-110 transition-transform">
+                          <Upload className="w-5 h-5 text-indigo-600" />
                         </div>
-                        <p className="text-sm font-semibold text-slate-700">Upload Process Data</p>
-                        <p className="text-[10px] text-slate-400 mt-1">클릭하여 파일 선택 · 데모: 분석 실행에서 샘플로 실행 가능</p>
+                        <div>
+                          <p className="text-sm font-semibold text-slate-700">공정 데이터 업로드</p>
+                          <p className="text-[10px] text-slate-400 mt-0.5">클릭하여 파일 선택 · 데모: 분석 실행에서 샘플로 실행 가능</p>
+                        </div>
                       </>
                     )}
                   </label>
                   {uploadParseError && (
-                    <p className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2" role="alert">
+                    <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2" role="alert">
                       {uploadParseError}
                     </p>
                   )}
                 </div>
-                <p className="text-[10px] text-slate-400 pt-2">다음: 사이드바에서 <strong>전처리 &amp; 증강</strong>으로 이동해 전처리 설정 후 분석을 실행하세요.</p>
               </div>
             </section>
 
-            {/* 온톨로지 템플릿 추천 — 파일 업로드 후 표시 */}
+            {/* 하단: MES 분석 템플릿 추천 */}
             {uploadTemplateRecommendations.length > 0 && (
-              <section className="mt-5 bg-white rounded-xl border border-indigo-100 shadow-sm overflow-hidden">
-                <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
-                  <Layers className="w-4 h-4 text-indigo-600 shrink-0" />
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-800">온톨로지 템플릿 추천</h3>
-                    <p className="text-[11px] text-slate-500 mt-0.5">업로드된 컬럼명을 온톨로지와 매칭한 상위 참조 템플릿입니다. 전체 분석 실행 후 더 정확한 추천을 확인할 수 있습니다.</p>
+              <section className="bg-white rounded-xl border border-indigo-100 shadow-sm overflow-hidden">
+                <div className="px-5 py-4 border-b border-slate-100">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Layers className="w-4 h-4 text-indigo-600 shrink-0" />
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-800">MES 분석 템플릿 추천</h3>
+                      <p className="text-[11px] text-slate-500 mt-0.5">업로드된 데이터 구조와 선택한 산업 특성을 분석하여 가장 적합한 분석 템플릿을 추천합니다. 전체 분석 실행 후 더 정확한 결과를 확인할 수 있습니다.</p>
+                    </div>
+                  </div>
+                  {/* 추천 방식 단계 */}
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <span className="font-semibold text-slate-500">추천 방식</span>
+                    <ChevronRight className="w-3 h-3 text-slate-300" />
+                    <span className="inline-flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-full px-2.5 py-1 text-slate-600">
+                      <span className="w-4 h-4 rounded-full bg-indigo-600 text-white text-[9px] font-bold flex items-center justify-center shrink-0">1</span>
+                      데이터 항목 분석
+                    </span>
+                    <ChevronRight className="w-3 h-3 text-slate-300" />
+                    <span className="inline-flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-full px-2.5 py-1 text-slate-600">
+                      <span className="w-4 h-4 rounded-full bg-indigo-600 text-white text-[9px] font-bold flex items-center justify-center shrink-0">2</span>
+                      산업 특성 반영
+                    </span>
+                    <ChevronRight className="w-3 h-3 text-slate-300" />
+                    <span className="inline-flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-full px-2.5 py-1 text-slate-600">
+                      <span className="w-4 h-4 rounded-full bg-indigo-600 text-white text-[9px] font-bold flex items-center justify-center shrink-0">3</span>
+                      데이터 구조 파악
+                    </span>
+                    <ChevronRight className="w-3 h-3 text-slate-300" />
+                    <span className="inline-flex items-center gap-1 bg-indigo-50 border border-indigo-200 rounded-full px-2.5 py-1 text-indigo-700 font-semibold">
+                      <span className="w-4 h-4 rounded-full bg-indigo-600 text-white text-[9px] font-bold flex items-center justify-center shrink-0">4</span>
+                      최적 템플릿 선별
+                    </span>
+                    <span className="ml-1 text-slate-400">· 산업 선택 변경 시 자동 재계산</span>
                   </div>
                 </div>
-                <div className="divide-y divide-slate-100">
-                  {uploadTemplateRecommendations.map(({ template, score, matchedFunctionIds }, idx) => {
-                    const relatedFns = template.recommendedFunctionIds
-                      .map((fid) => MES_ONTOLOGY.find((f) => f.id === fid))
-                      .filter(Boolean);
-                    const hasScore = score > 0;
-                    return (
-                      <div key={template.id} className="px-5 py-4 flex gap-4 items-start hover:bg-slate-50 transition-colors">
-                        {/* 순위 뱃지 */}
-                        <div className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold mt-0.5 ${
-                          idx === 0 ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-500'
-                        }`}>
-                          {idx + 1}
-                        </div>
-                        <div className="min-w-0 flex-1 space-y-1.5">
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-sm font-semibold text-slate-800">{template.name}</span>
-                            {hasScore && (
-                              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
-                                컬럼 매칭 {score}개
-                              </span>
-                            )}
-                          </div>
-                          {/* 관련 MES 기능 뱃지 */}
-                          <div className="flex flex-wrap gap-1">
-                            {relatedFns.map((fn) => fn && (
-                              <span
-                                key={fn.id}
-                                className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${
-                                  matchedFunctionIds.includes(fn.id)
-                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                    : 'bg-slate-50 text-slate-500 border-slate-200'
-                                }`}
-                              >
-                                {fn.id} · {fn.name.split(' ')[0]}
-                                {matchedFunctionIds.includes(fn.id) && ' ✓'}
-                              </span>
-                            ))}
-                          </div>
-                          {template.summary && (
-                            <p className="text-xs text-slate-500 leading-relaxed">{template.summary}</p>
-                          )}
-                          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
-                            {template.modelName && template.modelName !== '-' && (
-                              <span><span className="font-medium text-slate-700">모델</span> {template.modelName}</span>
-                            )}
-                            {template.modelPerformance?.accuracy != null && (
-                              <span><span className="font-medium text-slate-700">정확도</span> {(template.modelPerformance.accuracy * 100).toFixed(1)}%</span>
-                            )}
-                            {template.modelPerformance?.rmse != null && (
-                              <span><span className="font-medium text-slate-700">RMSE</span> {template.modelPerformance.rmse}</span>
-                            )}
-                          </div>
-                          {template.preprocessingMethods && template.preprocessingMethods.length > 0 && (
-                            <div className="flex flex-wrap gap-1 pt-0.5">
-                              {template.preprocessingMethods.slice(0, 4).map((m) => (
-                                <span key={m} className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">
-                                  {m}
+
+                {/* 데이터 수준 안내 */}
+                {uploadIsa95Warning && (
+                  <div className="px-5 py-3 border-b border-amber-100 bg-amber-50/70 flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-xs font-semibold text-amber-700">데이터 수준 안내</p>
+                      <p className="text-[11px] text-amber-600 mt-0.5 leading-relaxed">{uploadIsa95Warning}</p>
+                    </div>
+                  </div>
+                )}
+
+                {(() => {
+                  const maxScore = Math.max(...uploadTemplateRecommendations.map((r) => r.score), 0.001);
+                  const FN_SHORT_KO: Record<string, string> = {
+                    F001: 'WIP 추적', F002: '공정 품질관리', F003: '예지 보전',
+                    F004: '동적 일정 관리', F005: '이력 추적', F006: '불량 관리',
+                    F007: '생산 오더 관리', F008: '보전 계획', F009: '자재 추적',
+                  };
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-slate-100">
+                      {uploadTemplateRecommendations.map(({ template, score, matchedFunctionIds, coverageScore, coverageDetail }, idx) => {
+                        const relatedFns = template.recommendedFunctionIds
+                          .map((fid) => MES_ONTOLOGY.find((f) => f.id === fid))
+                          .filter(Boolean);
+                        const normalizedScore = Math.min(score / maxScore, 1);
+                        const suitabilityPct = Math.round((normalizedScore * 0.6 + coverageScore * 0.4) * 100);
+                        const suitabilityDots = suitabilityPct >= 65 ? 3 : suitabilityPct >= 40 ? 2 : 1;
+                        const suitabilityLabel = suitabilityPct >= 65 ? '적합' : suitabilityPct >= 40 ? '보통' : '참고';
+                        const suitabilityTextCls = suitabilityPct >= 65 ? 'text-indigo-600' : suitabilityPct >= 40 ? 'text-amber-600' : 'text-slate-500';
+                        const suitabilitySegCls = suitabilityPct >= 65 ? 'bg-indigo-500' : suitabilityPct >= 40 ? 'bg-amber-400' : 'bg-slate-400';
+                        const coveragePct = Math.round(coverageScore * 100);
+                        const coverageBarCls = coveragePct >= 75 ? 'bg-emerald-400' : coveragePct >= 50 ? 'bg-amber-400' : 'bg-rose-400';
+                        const coverageTextCls = coveragePct >= 75 ? 'text-emerald-600' : coveragePct >= 50 ? 'text-amber-600' : 'text-rose-600';
+                        return (
+                          <div key={template.id} className="px-5 py-5 flex flex-col gap-3 hover:bg-slate-50 transition-colors">
+                            {/* 순위 + 적합도 게이지 */}
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <div className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
+                                  idx === 0 ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-500'
+                                }`}>
+                                  {idx + 1}
+                                </div>
+                                <span className="text-sm font-semibold text-slate-800 leading-snug truncate">{template.name}</span>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                                <div className="flex gap-0.5">
+                                  {[0, 1, 2].map((i) => (
+                                    <div key={i} className={`w-3 h-2 rounded-sm ${i < suitabilityDots ? suitabilitySegCls : 'bg-slate-100'}`} />
+                                  ))}
+                                </div>
+                                <span className={`text-[10px] font-semibold ${suitabilityTextCls}`}>{suitabilityLabel}</span>
+                              </div>
+                            </div>
+
+                            {/* 관련 MES 기능 뱃지 */}
+                            <div className="flex flex-wrap gap-1">
+                              {relatedFns.map((fn) => fn && (
+                                <span
+                                  key={fn.id}
+                                  className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${
+                                    matchedFunctionIds.includes(fn.id)
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                      : 'bg-slate-50 text-slate-500 border-slate-200'
+                                  }`}
+                                >
+                                  {FN_SHORT_KO[fn.id] ?? fn.id}
+                                  {matchedFunctionIds.includes(fn.id) && ' ✓'}
                                 </span>
                               ))}
-                              {template.preprocessingMethods.length > 4 && (
-                                <span className="text-[10px] text-slate-400">+{template.preprocessingMethods.length - 4}</span>
+                            </div>
+
+                            {template.summary && (
+                              <p className="text-xs text-slate-500 leading-relaxed">{template.summary}</p>
+                            )}
+
+                            {/* 데이터 유사도 */}
+                            {coverageDetail.total > 0 && (
+                              <div>
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="text-[10px] text-slate-500">데이터 유사도</span>
+                                  <span className={`text-[10px] font-semibold ${coverageTextCls}`}>{coveragePct}%</span>
+                                </div>
+                                <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full ${coverageBarCls} transition-all`}
+                                    style={{ width: `${coveragePct}%` }}
+                                  />
+                                </div>
+                                {coverageDetail.missing.length > 0 && (
+                                  <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
+                                    보강하면 좋을 항목: {coverageDetail.missing.join(' · ')}
+                                  </p>
+                                )}
+                              </div>
+                            )}
+
+                            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
+                              {template.modelName && template.modelName !== '-' && (
+                                <span><span className="font-medium text-slate-700">모델</span> {template.modelName}</span>
+                              )}
+                              {template.modelPerformance?.accuracy != null && (
+                                <span><span className="font-medium text-slate-700">정확도</span> {(template.modelPerformance.accuracy * 100).toFixed(1)}%</span>
+                              )}
+                              {template.modelPerformance?.rmse != null && (
+                                <span><span className="font-medium text-slate-700">RMSE</span> {template.modelPerformance.rmse}</span>
                               )}
                             </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                            {template.preprocessingMethods && template.preprocessingMethods.length > 0 && (
+                              <div>
+                                <p className="text-[10px] font-semibold text-slate-500 mb-1">전처리</p>
+                                <div className="flex flex-wrap gap-1">
+                                  {template.preprocessingMethods.slice(0, 4).map((m) => (
+                                    <span key={m} className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">
+                                      {m}
+                                    </span>
+                                  ))}
+                                  {template.preprocessingMethods.length > 4 && (
+                                    <span className="text-[10px] text-slate-400">+{template.preprocessingMethods.length - 4}</span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                            {template.visualizationMethods && template.visualizationMethods.length > 0 && (
+                              <div>
+                                <p className="text-[10px] font-semibold text-slate-500 mb-1">시각화</p>
+                                <div className="flex flex-wrap gap-1">
+                                  {template.visualizationMethods.slice(0, 4).map((v) => (
+                                    <span key={v} className="text-[10px] bg-indigo-50 text-indigo-600 border border-indigo-100 px-1.5 py-0.5 rounded">
+                                      {v}
+                                    </span>
+                                  ))}
+                                  {template.visualizationMethods.length > 4 && (
+                                    <span className="text-[10px] text-slate-400">+{template.visualizationMethods.length - 4}</span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+
                 <div className="px-5 py-3 bg-slate-50 border-t border-slate-100">
                   <p className="text-[10px] text-slate-400">
-                    전체 템플릿은 <button type="button" onClick={() => setCurrentNav('ontology')} className="text-indigo-600 font-semibold hover:underline">Standard MES Ontology</button> 탭에서 확인할 수 있습니다.
+                    전체 분석 템플릿 목록은 <button type="button" onClick={() => setCurrentNav('ontology')} className="text-indigo-600 font-semibold hover:underline">Standard MES Ontology</button> 탭에서 확인하세요.
                   </p>
+                </div>
+
+                {/* 분석 구조 맵 */}
+                <div className="border-t border-slate-100">
+                  <div className="px-5 py-3 flex items-center gap-2">
+                    <Workflow className="w-4 h-4 text-indigo-500 shrink-0" />
+                    <div>
+                      <span className="text-sm font-bold text-slate-800">분석 구조 맵</span>
+                      <span className="ml-2 text-[11px] text-slate-500">데이터와 연결된 분석 기능(파란 테두리)과 추천 템플릿(보라 테두리)을 그래프로 확인합니다.</span>
+                    </div>
+                  </div>
+                  <div className="px-5 pb-5">
+                    <OntologyGraph
+                      height={480}
+                      highlightedIds={
+                        Array.from(new Set(uploadTemplateRecommendations.flatMap((r) => r.matchedFunctionIds)))
+                      }
+                      templates={uploadTemplateRecommendations.map((r) => r.template)}
+                    />
+                  </div>
                 </div>
               </section>
             )}
 
             {/* 파일 미업로드 시 안내 */}
             {!uploadedProcessFile && (
-              <section className="mt-5 bg-slate-50 rounded-xl border border-dashed border-slate-200 px-5 py-6 text-center">
+              <section className="bg-slate-50 rounded-xl border border-dashed border-slate-200 px-5 py-10 text-center">
                 <Layers className="w-8 h-8 text-slate-300 mx-auto mb-2" />
                 <p className="text-xs font-semibold text-slate-500">파일을 업로드하면</p>
                 <p className="text-[11px] text-slate-400 mt-1">데이터 컬럼을 온톨로지와 자동 매칭하여 참조 템플릿을 추천해 드립니다.</p>

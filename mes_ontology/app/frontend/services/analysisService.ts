@@ -142,6 +142,216 @@ export async function analyzeDataAndMatch(
   return { matches, summary, augmentationSuggestions };
 }
 
+/** 산업별 우선 MES 기능 ID (순서 = 가중치 우선순위) */
+const INDUSTRY_FUNCTION_BOOST: Partial<Record<IndustryType, string[]>> = {
+  [IndustryType.AUTOMOTIVE]:     ['F001', 'F005', 'F002', 'F006'],
+  [IndustryType.ELECTRONICS]:    ['F002', 'F003', 'F001', 'F004'],
+  [IndustryType.SEMICONDUCTOR]:  ['F002', 'F003', 'F001', 'F009'],
+  [IndustryType.PHARMACEUTICAL]: ['F006', 'F005', 'F002', 'F009'],
+  [IndustryType.FOOD_BEVERAGE]:  ['F005', 'F009', 'F006', 'F002'],
+};
+
+/** 기능별 인스턴스 커버리지 판단 기준 속성 */
+const FUNCTION_COVERAGE_ATTRS: Record<string, { label: string; keywords: string[] }[]> = {
+  F001: [
+    { label: 'Lot/WO ID',   keywords: ['lot', 'wo', 'order', 'job', 'batch'] },
+    { label: '수량',         keywords: ['qty', 'quantity', 'count', 'amount'] },
+    { label: '타임스탬프',   keywords: ['time', 'date', 'timestamp', 'datetime'] },
+    { label: '작업장',       keywords: ['station', 'line', 'cell', 'machine', 'area'] },
+  ],
+  F002: [
+    { label: '측정값',             keywords: ['measurement', 'value', 'dimension', 'thickness', 'diameter', 'weight', 'hardness'] },
+    { label: '규격 한계(USL/LSL)', keywords: ['usl', 'lsl', 'spec', 'limit', 'upper', 'lower', 'tolerance'] },
+    { label: '공정/제품 ID',       keywords: ['process', 'product', 'part', 'lot', 'item'] },
+    { label: '불량 여부',          keywords: ['defect', 'pass', 'fail', 'result', 'quality', 'status'] },
+  ],
+  F003: [
+    { label: '센서값',     keywords: ['sensor', 'temperature', 'temp', 'vibration', 'vib', 'pressure', 'current', 'speed', 'torque'] },
+    { label: '타임스탬프', keywords: ['time', 'date', 'timestamp', 'datetime'] },
+    { label: '설비 ID',    keywords: ['machine', 'equipment', 'asset', 'device', 'tool', 'unit'] },
+    { label: '고장/라벨',  keywords: ['fault', 'failure', 'alarm', 'error', 'label', 'status', 'health'] },
+  ],
+  F004: [
+    { label: '오더/작업 ID', keywords: ['order', 'job', 'wo', 'task', 'schedule'] },
+    { label: '계획 일정',    keywords: ['plan', 'start', 'end', 'due', 'deadline', 'date'] },
+    { label: '설비/자원',    keywords: ['machine', 'equipment', 'resource', 'line'] },
+    { label: '우선순위',     keywords: ['priority', 'urgent', 'critical', 'rank'] },
+  ],
+  F005: [
+    { label: 'Lot/시리얼',  keywords: ['lot', 'serial', 'sn', 'batch'] },
+    { label: '이력/추적',   keywords: ['trace', 'history', 'track', 'record', 'log'] },
+    { label: '타임스탬프',  keywords: ['time', 'date', 'timestamp'] },
+    { label: '공정 단계',   keywords: ['step', 'stage', 'process', 'operation', 'station'] },
+  ],
+  F006: [
+    { label: '불량 유형', keywords: ['defect', 'reject', 'failure', 'ncr', 'type', 'code'] },
+    { label: '원인 코드', keywords: ['cause', 'reason', 'root', 'category'] },
+    { label: '공정/Lot',  keywords: ['process', 'lot', 'batch', 'product', 'line'] },
+    { label: '날짜',      keywords: ['date', 'time', 'timestamp'] },
+  ],
+  F007: [
+    { label: '생산 오더', keywords: ['order', 'wo', 'production', 'mo'] },
+    { label: '수량',      keywords: ['qty', 'quantity', 'actual', 'planned', 'target'] },
+    { label: '일정',      keywords: ['start', 'end', 'plan', 'actual', 'schedule', 'due'] },
+    { label: '품목',      keywords: ['item', 'product', 'part', 'sku', 'material'] },
+  ],
+  F008: [
+    { label: '설비 ID',   keywords: ['machine', 'equipment', 'asset', 'tool'] },
+    { label: '보전 유형', keywords: ['maintenance', 'inspection', 'repair', 'service', 'pm'] },
+    { label: '날짜/주기', keywords: ['date', 'time', 'interval', 'frequency', 'cycle'] },
+    { label: '상태/결과', keywords: ['status', 'result', 'complete', 'downtime'] },
+  ],
+  F009: [
+    { label: '자재 코드', keywords: ['material', 'mat', 'item', 'part', 'component'] },
+    { label: '소비량',    keywords: ['consumption', 'qty', 'quantity', 'amount', 'used'] },
+    { label: 'Lot/배치', keywords: ['lot', 'batch', 'supplier', 'po'] },
+    { label: '날짜',      keywords: ['date', 'time', 'timestamp'] },
+  ],
+};
+
+/** 헤더 목록 × 기능 ID → 인스턴스 커버리지 점수 */
+function computeCoverage(
+  headers: string[],
+  primaryFunctionId: string,
+): { matched: number; total: number; missing: string[]; score: number } {
+  const attrs = FUNCTION_COVERAGE_ATTRS[primaryFunctionId];
+  if (!attrs || attrs.length === 0) return { matched: 0, total: 0, missing: [], score: 1 };
+  const normalizedHeaders = headers.map((h) => h.trim().toLowerCase().replace(/[\s\-]/g, '_'));
+  const missing: string[] = [];
+  let matched = 0;
+  for (const attr of attrs) {
+    const found = attr.keywords.some((kw) => normalizedHeaders.some((h) => h.includes(kw)));
+    if (found) matched++; else missing.push(attr.label);
+  }
+  return { matched, total: attrs.length, missing, score: matched / attrs.length };
+}
+
+/** 컬럼 타입 패턴 분석 (샘플 50행 기반) */
+function detectColumnTypes(
+  headers: string[],
+  rows: string[][],
+): { numericRatio: number; hasTimestamp: boolean; hasCategorical: boolean; extraBoostFids: string[] } {
+  if (rows.length === 0 || headers.length === 0) {
+    return { numericRatio: 0, hasTimestamp: false, hasCategorical: false, extraBoostFids: [] };
+  }
+  const SAMPLE = Math.min(rows.length, 50);
+  const sampleRows = rows.slice(0, SAMPLE);
+  const TIMESTAMP_RE = /^\d{4}[-/]\d{2}[-/]\d{2}|^\d{2}[./-]\d{2}[./-]\d{2,4}/;
+  let numericCount = 0;
+  let timestampCount = 0;
+  let categoricalCount = 0;
+
+  for (let c = 0; c < headers.length; c++) {
+    const vals = sampleRows.map((r) => r[c] ?? '').filter((v) => v !== '');
+    if (vals.length === 0) continue;
+    const numericVals = vals.filter((v) => !Number.isNaN(Number(v)));
+    const tsVals = vals.filter((v) => TIMESTAMP_RE.test(v));
+    if (tsVals.length / vals.length > 0.6) {
+      timestampCount++;
+    } else if (numericVals.length / vals.length > 0.8) {
+      numericCount++;
+    } else {
+      const uniqueRatio = new Set(vals).size / vals.length;
+      if (uniqueRatio < 0.4) categoricalCount++;
+    }
+  }
+
+  const numericRatio = numericCount / headers.length;
+  const extraBoostFids: string[] = [];
+  if (numericRatio > 0.7)   extraBoostFids.push('F002', 'F003');
+  if (categoricalCount > 0) extraBoostFids.push('F001', 'F006');
+  if (timestampCount > 0)   extraBoostFids.push('F003', 'F004', 'F008');
+
+  return {
+    numericRatio,
+    hasTimestamp: timestampCount > 0,
+    hasCategorical: categoricalCount > 0,
+    extraBoostFids: [...new Set(extraBoostFids)],
+  };
+}
+
+/** ISA-95 계층 경고: L1/L2 원시 데이터 여부 감지 */
+function detectISA95Warning(
+  headers: string[],
+  colTypes: ReturnType<typeof detectColumnTypes>,
+): string | null {
+  const hasIdentifier = headers.some((h) => {
+    const n = h.trim().toLowerCase();
+    return ['lot', 'order', 'serial', 'id', 'line', 'station', 'product', 'batch', 'wo'].some((kw) => n.includes(kw));
+  });
+  if (colTypes.numericRatio > 0.85 && !colTypes.hasCategorical && !colTypes.hasTimestamp && !hasIdentifier) {
+    return '센서 측정 원본 데이터로 보입니다. 설비·Lot 식별 정보나 시간대별 집계 컬럼을 추가하면 더 정확한 분석 결과를 기대할 수 있습니다.';
+  }
+  return null;
+}
+
+export interface EnhancedTemplateResult {
+  template: ResultTemplate;
+  score: number;
+  matchedFunctionIds: string[];
+  coverageScore: number;
+  coverageDetail: { matched: number; total: number; missing: string[] };
+}
+
+/**
+ * 산업 컨텍스트·데이터 타입 패턴·인스턴스 커버리지를 반영한 향상된 템플릿 추천.
+ * 기존 getTemplateRecommendationsByColumns 대비:
+ *   1) 산업별 기능 가중치 적용
+ *   2) 데이터 타입 패턴(numeric/categorical/timestamp 비율) 반영
+ *   3) ISA-95 계층 경고 감지
+ *   4) 인스턴스 커버리지 점수 계산
+ */
+export function getEnhancedTemplateRecommendations(
+  headers: string[],
+  rows: string[][],
+  templates: ResultTemplate[],
+  industry: IndustryType,
+  topN = 3,
+): { recommendations: EnhancedTemplateResult[]; isa95Warning: string | null } {
+  // 1. 컬럼명 → 기능 힌트 점수
+  const functionScores: Record<string, number> = {};
+  for (const header of headers) {
+    const hints = getHintsForFeature(header);
+    if (hints) {
+      for (const fnId of hints) {
+        functionScores[fnId] = (functionScores[fnId] ?? 0) + 1;
+      }
+    }
+  }
+
+  // 2. 산업 컨텍스트 가중치
+  const industryBoost = INDUSTRY_FUNCTION_BOOST[industry] ?? [];
+  industryBoost.forEach((fnId, rank) => {
+    const w = rank === 0 ? 1.5 : rank === 1 ? 1.0 : 0.5;
+    functionScores[fnId] = (functionScores[fnId] ?? 0) + w;
+  });
+
+  // 3. 데이터 타입 패턴 가중치
+  const colTypes = detectColumnTypes(headers, rows);
+  for (const fnId of colTypes.extraBoostFids) {
+    functionScores[fnId] = (functionScores[fnId] ?? 0) + 0.5;
+  }
+
+  // 4. 템플릿 점수 + 커버리지
+  const scored: EnhancedTemplateResult[] = templates.map((template) => {
+    const matchedFunctionIds = template.recommendedFunctionIds.filter(
+      (fnId) => (functionScores[fnId] ?? 0) > 0,
+    );
+    const score = template.recommendedFunctionIds.reduce(
+      (sum, fnId) => sum + (functionScores[fnId] ?? 0),
+      0,
+    );
+    const primaryFid = template.recommendedFunctionIds[0] ?? '';
+    const { matched, total, missing, score: coverageScore } = computeCoverage(headers, primaryFid);
+    return { template, score, matchedFunctionIds, coverageScore, coverageDetail: { matched, total, missing } };
+  });
+
+  return {
+    recommendations: scored.sort((a, b) => b.score - a.score).slice(0, topN),
+    isa95Warning: detectISA95Warning(headers, colTypes),
+  };
+}
+
 /**
  * CSV 헤더(컬럼명) 목록을 바탕으로 온톨로지 함수 ID별 매칭 점수를 계산하여
  * 가장 관련성 높은 참조 템플릿 top-N개를 반환합니다.
