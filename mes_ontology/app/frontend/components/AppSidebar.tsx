@@ -1,7 +1,7 @@
 import React from 'react';
-import { Cpu, Upload, PlayCircle, BarChart3, Database, Info, X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Cpu, Upload, PlayCircle, BarChart3, Database, Info, X, ChevronLeft, ChevronRight, SlidersHorizontal } from 'lucide-react';
 
-export type NavId = 'data' | 'run' | 'result' | 'ontology';
+export type NavId = 'data' | 'preprocess' | 'run' | 'result' | 'ontology';
 
 interface AppSidebarProps {
   currentNav: NavId;
@@ -15,6 +15,7 @@ interface AppSidebarProps {
 
 const NAV_ITEMS: { id: NavId; label: string; icon: React.ReactNode }[] = [
   { id: 'data', label: '데이터 준비', icon: <Upload className="w-5 h-5 shrink-0" /> },
+  { id: 'preprocess', label: '전처리 & 증강', icon: <SlidersHorizontal className="w-5 h-5 shrink-0" /> },
   { id: 'run', label: '분석 실행', icon: <PlayCircle className="w-5 h-5 shrink-0" /> },
   { id: 'result', label: '결과', icon: <BarChart3 className="w-5 h-5 shrink-0" /> },
   { id: 'ontology', label: 'Standard MES Ontology', icon: <Database className="w-5 h-5 shrink-0" /> },
