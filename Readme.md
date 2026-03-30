@@ -11,7 +11,7 @@ ontology/          제조 MES 온톨로지 플랫폼
 msa_framework/     마이크로서비스 프레임워크
 modules/           공통 모듈 (전처리, 증강, 모델 추천 등)
 data/              샘플 데이터셋
-poc/               PoC 및 실험 코드
+tests/             test 및 실험 코드
 ```
 
 ---
@@ -19,6 +19,7 @@ poc/               PoC 및 실험 코드
 ## msa_framework — 마이크로서비스 모니터링 플랫폼
 
 마이크로서비스 플랫폼
+
 - 도메인 레이어 분리 구조의 백엔드 REST API 서버
 - 컴포넌트 기반 프론트엔드 SPA
 
@@ -38,11 +39,13 @@ msa_framework/
 ```
 
 **주요 기능**
+
 - 마이크로서비스 헬스·트래픽 상태 실시간 모니터링
 - 인프라 노드 맵 시각화
 - 상태 변경 이벤트 로그
 
 **실행**
+
 ```bash
 # 백엔드
 cd msa_framework/backend
@@ -60,6 +63,7 @@ npm install && npm run dev
 ## ontology — 제조 온톨로지 플랫폼
 
 제조 설비·공정 데이터를 지식 그래프로 구성·분석하는 플랫폼
+
 - 라우터·서비스 레이어 구조의 백엔드
 - 온톨로지 시각화 SPA 프론트엔드
 - Docker Compose 기반 전체 스택 구동
@@ -80,15 +84,18 @@ ontology/
 ```
 
 **주요 기능**
+
 - OWL/RDF 온톨로지 검증·임포트 및 Triple CRUD
 - 제조 라인·작업지시·품질·설비 상태 관리
 - 품질 트렌드 분석, OEE(설비 종합효율) 계산
 - 다중 머신러닝 모델 비교 기반 AutoML (분류/회귀)
 
 **실행**
+
 ```bash
 # Docker Compose로 전체 스택 구동 (DB + 백엔드 + 프론트엔드)
 docker compose -f ontology/ontology-compose.yaml up
 # 프론트엔드: http://localhost:3001
 # 백엔드 API: http://localhost:8001
 ```
+
