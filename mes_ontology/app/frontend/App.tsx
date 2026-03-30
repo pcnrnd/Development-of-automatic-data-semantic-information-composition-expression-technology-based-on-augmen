@@ -666,7 +666,19 @@ const App: React.FC = () => {
                             {coverageDetail.total > 0 && (
                               <div>
                                 <div className="flex items-center justify-between mb-1">
-                                  <span className="text-[10px] text-slate-500">데이터 유사도</span>
+                                  <span className="flex items-center gap-1">
+                                    <span className="text-[10px] text-slate-500">데이터 유사도</span>
+                                    <span className="relative group inline-flex">
+                                      <span className="w-3.5 h-3.5 rounded-full bg-slate-200 text-slate-500 text-[9px] font-bold flex items-center justify-center cursor-help leading-none select-none">?</span>
+                                      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-60 text-[10px] text-slate-600 bg-white border border-slate-200 rounded-md shadow-lg px-2.5 py-2 leading-relaxed z-20 hidden group-hover:block pointer-events-none whitespace-normal">
+                                        <span className="font-semibold text-slate-700 block mb-1">유사도 산출 기준</span>
+                                        <span className="block">① 컬럼명 키워드 매칭 — 센서·품질·이력 등 MES 관련 키워드 일치 수</span>
+                                        <span className="block">② 산업 컨텍스트 — 선택 산업의 주요 기능에 가중치 부여</span>
+                                        <span className="block">③ 데이터 타입 패턴 — 수치형·범주형·타임스탬프 비율 반영</span>
+                                        <span className="block">④ 핵심 항목 커버리지 — 기능별 필수 컬럼 보유 비율</span>
+                                      </span>
+                                    </span>
+                                  </span>
                                   <span className={`text-[10px] font-semibold ${coverageTextCls}`}>{coveragePct}%</span>
                                 </div>
                                 <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
