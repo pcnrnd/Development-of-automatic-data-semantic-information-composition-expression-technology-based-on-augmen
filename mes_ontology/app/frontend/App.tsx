@@ -59,17 +59,17 @@ function getMockProfileForIndustry(industry: IndustryType): DataProfile {
         features: ['State', 'Torque', 'Spindle_Speed', 'Sensor'],
         recordsCount: 12000,
       };
-    case IndustryType.PHARMACEUTICAL:
+    case IndustryType.ELECTRICAL:
       return {
         ...base,
-        features: ['State', 'Sensor', 'Temperature', 'Pressure'],
-        recordsCount: 5200,
+        features: ['Vibration', 'Temperature', 'Pressure', 'Sensor', 'State'],
+        recordsCount: 9400,
       };
-    case IndustryType.FOOD_BEVERAGE:
+    case IndustryType.HEAVY_INDUSTRY:
       return {
         ...base,
-        features: ['Temperature', 'Pressure', 'Sensor', 'State'],
-        recordsCount: 6800,
+        features: ['Torque', 'Vibration', 'Sensor', 'State', 'Temperature'],
+        recordsCount: 11200,
       };
     case IndustryType.SEMICONDUCTOR:
     default:

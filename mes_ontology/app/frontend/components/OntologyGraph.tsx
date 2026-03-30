@@ -36,17 +36,30 @@ const CATEGORY_SHORT: Record<string, string> = {
   Production: 'Prod',
 };
 
-/** 기능 노드 짧은 라벨 (ID 또는 약어) */
+/** 기능 노드 원형 내부 약어 */
 const FUNCTION_SHORT: Record<string, string> = {
   F001: 'WIP',
   F002: 'SPC',
   F003: 'PdM',
-  F004: 'Schedule',
+  F004: 'Sched',
   F005: 'Trace',
   F006: 'NCM',
   F007: 'POM',
-  F008: 'MaintSched',
-  F009: 'Material',
+  F008: 'Maint',
+  F009: 'Mat',
+};
+
+/** 기능 노드 외부 한글 라벨 */
+const FN_LABEL_KO: Record<string, string> = {
+  F001: 'WIP 추적',
+  F002: '공정 품질',
+  F003: '예지 보전',
+  F004: '일정 관리',
+  F005: '이력 추적',
+  F006: '불량 관리',
+  F007: '생산 오더',
+  F008: '보전 계획',
+  F009: '자재 추적',
 };
 
 function groupByCategory(ontology: MESFunction[]): Map<string, MESFunction[]> {
@@ -115,41 +128,43 @@ function CategoryNode({ data }: NodeProps<{ label: string; category: string; sho
   );
 }
 
-/** 기능 노드: 원형, L2 기능 (ID + 약어, 툴팁/클릭 시 상세). highlighted 시 분석 결과 매칭으로 강조 */
+/** 기능 노드: 원형, L2 기능. 원 외부에 한글 라벨 표시. highlighted 시 매칭 강조 */
 function FunctionNode({ data, selected }: NodeProps<{ label: string; id: string; standard: string; fn: MESFunction; shortLabel?: string; targetPos?: Position; highlighted?: boolean }>) {
   const target = data.targetPos ?? Position.Top;
   const short = data.shortLabel ?? data.id;
   const highlighted = data.highlighted === true;
+  const koLabel = FN_LABEL_KO[data.id] ?? short;
   return (
-    <div
-      className={`relative w-[3.75rem] h-[3.75rem] rounded-full flex flex-col items-center justify-center cursor-pointer transition-all border-2 ${
-        selected
-          ? 'bg-indigo-50 border-indigo-400 shadow-lg ring-2 ring-indigo-200'
-          : highlighted
-            ? 'bg-indigo-50 border-indigo-400 shadow-md ring-2 ring-indigo-300'
-            : 'bg-white border-slate-200 shadow-sm hover:border-indigo-300 hover:bg-indigo-50/80 hover:shadow-md'
-      }`}
-      title={`${data.id}: ${data.label}`}
-    >
-      <Handle type="target" position={target} className="!w-0 !h-0 !min-w-0 !min-h-0 !border-0 !opacity-0" />
-      <span className="absolute -top-0.5 right-0.5 text-[8px] font-medium text-slate-400">L2</span>
-      <span className="font-mono text-[10px] text-slate-500">{data.id}</span>
-      <span className="text-xs font-semibold text-slate-800 leading-tight truncate max-w-[90%]">{short}</span>
+    <div className="flex flex-col items-center gap-1" title={`${data.id}: ${data.label}`}>
+      <div
+        className={`relative w-16 h-16 rounded-full flex flex-col items-center justify-center cursor-pointer transition-all border-2 ${
+          selected
+            ? 'bg-indigo-50 border-indigo-500 shadow-lg ring-2 ring-indigo-200'
+            : highlighted
+              ? 'bg-indigo-50 border-indigo-500 shadow-md ring-2 ring-indigo-300'
+              : 'bg-white border-slate-300 shadow-sm hover:border-indigo-400 hover:bg-indigo-50/80 hover:shadow-md'
+        }`}
+      >
+        <Handle type="target" position={target} className="!w-0 !h-0 !min-w-0 !min-h-0 !border-0 !opacity-0" />
+        <span className="absolute -top-0.5 right-0.5 text-[8px] font-medium text-slate-400">L2</span>
+        <span className={`font-mono text-[9px] font-semibold ${highlighted || selected ? 'text-indigo-400' : 'text-slate-400'}`}>{data.id}</span>
+        <span className={`text-[12px] font-bold leading-tight ${highlighted || selected ? 'text-indigo-700' : 'text-slate-800'}`}>{short}</span>
+      </div>
+      <span className={`text-[10px] font-semibold leading-tight whitespace-nowrap ${highlighted || selected ? 'text-indigo-600' : 'text-slate-600'}`}>{koLabel}</span>
     </div>
   );
 }
 
-/** L3 템플릿 노드: 결과 탭 하나에 대응. data.template은 클릭 시 패널용 */
+/** L3 템플릿 노드: 블루 채운 원형. 이름은 원 외부에 표시해 가독성 확보 */
 function TemplateNode({ data }: NodeProps<{ label: string; templateId: string; template?: ResultTemplate }>) {
   return (
-    <div
-      className="relative w-[4rem] h-[4rem] rounded-full bg-white border-2 border-violet-300 shadow-md ring-1 ring-violet-200 flex flex-col items-center justify-center cursor-pointer"
-      title={data.label}
-    >
-      <Handle type="source" position={Position.Bottom} className="!w-0 !h-0 !min-w-0 !min-h-0 !border-0 !opacity-0" />
-      <LayoutTemplate className="w-4 h-4 text-violet-500 shrink-0 mb-0.5" />
-      <span className="absolute -top-0.5 right-0.5 text-[8px] font-medium text-slate-400 bg-slate-100 rounded px-1">L3</span>
-      <span className="text-[10px] font-semibold text-slate-800 leading-tight truncate max-w-[95%] px-0.5 text-center">{data.label}</span>
+    <div className="flex flex-col items-center gap-1" title={data.label}>
+      <div className="relative w-[4.5rem] h-[4.5rem] rounded-full bg-blue-300 border-2 border-blue-400 shadow-lg ring-2 ring-blue-200/60 flex flex-col items-center justify-center cursor-pointer">
+        <Handle type="source" position={Position.Bottom} className="!w-0 !h-0 !min-w-0 !min-h-0 !border-0 !opacity-0" />
+        <LayoutTemplate className="w-5 h-5 text-blue-900 shrink-0" />
+        <span className="absolute -top-0.5 right-0.5 text-[8px] font-semibold text-blue-700 bg-blue-100 rounded px-1">L3</span>
+      </div>
+      <span className="text-[10px] font-semibold text-blue-700 leading-tight whitespace-nowrap max-w-[90px] text-center">{data.label}</span>
     </div>
   );
 }
@@ -161,7 +176,7 @@ const nodeTypes: NodeTypes = {
   template: TemplateNode,
 };
 
-/** 방사형(원형) 레이아웃: 중앙 루트 → 1링 카테고리 → 2링 기능 → 3링 템플릿(선택). highlightedIds에 포함된 기능 노드는 매칭 강조, templates가 있으면 L3 노드 및 Template→L2 엣지 추가 */
+/** 방사형(원형) 레이아웃: 중앙 루트 → 1링 카테고리 → 2링 기능 → 3링 템플릿(선택). */
 function buildGraphElements(
   ontology: MESFunction[],
   highlightedIds?: string[],
@@ -179,7 +194,7 @@ function buildGraphElements(
   const R3 = 340; // L3 템플릿 반지름
   const FUN_SPREAD_DEG = 22; // 같은 카테고리 내 기능 간 각도
   const TPL_SPREAD_DEG = 18; // 같은 Function에 연결된 L3 템플릿 간 각도(겹침 방지)
-  const TPL_RADIUS = 320; // L3 템플릿 반지름 (Function보다 바깥에 배치)
+  const TPL_RADIUS = 340; // L3 템플릿 반지름 (Function보다 바깥에 배치)
 
   // 루트 노드 (중앙)
   nodes.push({
@@ -221,7 +236,7 @@ function buildGraphElements(
       source: ROOT_ID,
       target: id,
       type: 'straight',
-      style: { stroke: '#64748b', strokeWidth: 2 },
+      style: { stroke: '#94a3b8', strokeWidth: 1.5 },
     });
   });
 
@@ -248,7 +263,7 @@ function buildGraphElements(
       nodes.push({
         id: nid,
         type: 'function',
-        position: { x: fx - 30, y: fy - 30 },
+        position: { x: fx - 32, y: fy - 32 },
         data: {
           label: fn.name,
           id: fn.id,
@@ -266,12 +281,12 @@ function buildGraphElements(
         source: catId,
         target: nid,
         type: 'straight',
-        style: { stroke: '#64748b', strokeWidth: 2 },
+        style: { stroke: '#94a3b8', strokeWidth: 1.5 },
       });
     });
   });
 
-  // L3 템플릿: 연결된 L2 Function 근처에 배치. 같은 Function을 참조하는 템플릿은 각도로 흩어 겹치지 않게 함
+  // L3 템플릿: 연결된 L2 Function 근처에 배치.
   const templateList = templates?.length ? templates : [];
   const byPrimaryFid = new Map<string, number[]>();
   templateList.forEach((tpl, tplIdx) => {
@@ -310,7 +325,7 @@ function buildGraphElements(
     nodes.push({
       id: tplId,
       type: 'template',
-      position: { x: tx - 32, y: ty - 32 },
+      position: { x: tx - 36, y: ty - 36 },
       data: { label: tpl.name, templateId: tpl.id, template: tpl },
       sourcePosition: Position.Bottom,
       targetPosition: Position.Top,
@@ -322,7 +337,7 @@ function buildGraphElements(
         source: tplId,
         target: fid,
         type: 'straight',
-        style: { stroke: '#8b5cf6', strokeWidth: 1.5, strokeDasharray: '4 2' },
+        style: { stroke: '#60a5fa', strokeWidth: 2, strokeDasharray: '5 3' },
       });
     });
   });
@@ -331,22 +346,13 @@ function buildGraphElements(
 }
 
 export interface OntologyGraphProps {
-  /** 노드 클릭 시 (계층별 메타정보 패널용). root/domain/function/template 공통 */
   onSelectNode?: (node: OntologySelectedNode) => void;
-  /** 기능 노드 클릭 시 (하위 호환, onSelectNode와 함께 호출 가능) */
   onSelectFunction?: (fn: MESFunction) => void;
-  /** 그래프 컨테이너 높이 */
   height?: number;
-  /** 분석 결과로 매칭된 기능 ID 목록. 해당 노드를 강조 표시합니다. */
   highlightedIds?: string[];
-  /** L3 결과 템플릿 목록. 있으면 3링에 템플릿 노드 및 Template→L2 엣지를 추가합니다. */
   templates?: ResultTemplate[];
 }
 
-/**
- * Standard MES 온톨로지를 노드·엣지 그래프로 시각화.
- * 루트(MES) → 카테고리 → 기능 3단계 계층 구조.
- */
 const OntologyGraph: React.FC<OntologyGraphProps> = ({
   onSelectNode,
   onSelectFunction,
@@ -393,17 +399,17 @@ const OntologyGraph: React.FC<OntologyGraphProps> = ({
 
   return (
     <div className="rounded-xl border border-slate-200 bg-gradient-to-b from-slate-50 to-slate-100/80 overflow-hidden shadow-sm" style={{ height }}>
-      {/* 헤더: 다이어그램 제목 및 계층 설명 */}
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-200 bg-white/80">
         <div>
           <h3 className="text-sm font-semibold text-slate-800">Ontology Structure</h3>
           <p className="text-[10px] text-slate-500 mt-0.5">L0 Root · L1 Domain · L2 Function · L3 Template</p>
         </div>
         <div className="flex items-center gap-3 text-[10px] text-slate-500">
-          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-slate-700" /> Root</span>
-          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-white border border-slate-300" /> Domain</span>
-          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-white border border-slate-200" /> Function</span>
-          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-white border border-violet-300" /> Template</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-slate-700" /> Root</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-white border-2 border-slate-300" /> Domain</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-white border-2 border-slate-300" /> Function</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-indigo-50 border-2 border-indigo-500" /> 매칭 기능</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-blue-300 border-2 border-blue-400" /> Template</span>
         </div>
       </div>
       <div className="relative" style={{ height: height - 52 }}>

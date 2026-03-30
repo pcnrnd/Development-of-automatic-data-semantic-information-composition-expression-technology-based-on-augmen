@@ -3,8 +3,8 @@ export enum IndustryType {
   AUTOMOTIVE = 'Automotive',
   ELECTRONICS = 'Electronics',
   SEMICONDUCTOR = 'Semiconductor',
-  PHARMACEUTICAL = 'Pharmaceutical',
-  FOOD_BEVERAGE = 'Food & Beverage'
+  ELECTRICAL = 'Electrical & Power',
+  HEAVY_INDUSTRY = 'Heavy Industry'
 }
 
 export interface DataProfile {

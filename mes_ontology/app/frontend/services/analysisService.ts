@@ -147,8 +147,8 @@ const INDUSTRY_FUNCTION_BOOST: Partial<Record<IndustryType, string[]>> = {
   [IndustryType.AUTOMOTIVE]:     ['F001', 'F005', 'F002', 'F006'],
   [IndustryType.ELECTRONICS]:    ['F002', 'F003', 'F001', 'F004'],
   [IndustryType.SEMICONDUCTOR]:  ['F002', 'F003', 'F001', 'F009'],
-  [IndustryType.PHARMACEUTICAL]: ['F006', 'F005', 'F002', 'F009'],
-  [IndustryType.FOOD_BEVERAGE]:  ['F005', 'F009', 'F006', 'F002'],
+  [IndustryType.ELECTRICAL]:     ['F003', 'F008', 'F002', 'F001'],
+  [IndustryType.HEAVY_INDUSTRY]: ['F003', 'F007', 'F001', 'F008'],
 };
 
 /** 기능별 인스턴스 커버리지 판단 기준 속성 */
