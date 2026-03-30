@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   ResponsiveContainer,
   Radar,
@@ -78,7 +78,7 @@ function getMockProfileForIndustry(industry: IndustryType): DataProfile {
       };
   }
 }
-import { analysisService } from './services/analysisService';
+import { analysisService, getTemplateRecommendationsByColumns } from './services/analysisService';
 import { automlFit, type AutoMLFitResult } from './services/backendApi';
 import { parseCsvForAutoml } from './utils/csvParser';
 import {
@@ -175,6 +175,25 @@ const App: React.FC = () => {
     } catch {}
   };
 
+  // 파일 업로드 시 샘플 미리보기 파싱
+  useEffect(() => {
+    if (!uploadedProcessFile) { setDataPreview(null); return; }
+    let cancelled = false;
+    (async () => {
+      const raw = await uploadedProcessFile.text();
+      if (cancelled) return;
+      const text = raw.replace(/^\uFEFF/, '');
+      const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+      if (lines.length < 2) { setDataPreview(null); return; }
+      const delim = lines[0].includes(';') ? ';' : ',';
+      const strip = (s: string) => s.replace(/^"|"$/g, '').trim();
+      const headers = lines[0].split(delim).map(strip);
+      const rows = lines.slice(1, 6).map((l) => l.split(delim).map(strip));
+      setDataPreview({ headers, rows });
+    })();
+    return () => { cancelled = true; };
+  }, [uploadedProcessFile]);
+
   const [industry, setIndustry] = useState<IndustryType>(IndustryType.SEMICONDUCTOR);
   const [isProcessing, setIsProcessing] = useState(false);
   const [currentStep, setCurrentStep] = useState(0);
@@ -193,8 +212,9 @@ const App: React.FC = () => {
 
   // 전처리 & 증강
   const [preprocConfig, setPreprocConfig] = useState<PreprocConfig>(DEFAULT_PREPROC_CONFIG);
-  const [preprocActiveStep, setPreprocActiveStep] = useState(0);
   const [preprocCompleted, setPreprocCompleted] = useState(false);
+  const [dataPreview, setDataPreview] = useState<{ headers: string[]; rows: string[][] } | null>(null);
+  const [preprocSettingsExpanded, setPreprocSettingsExpanded] = useState(false);
 
   const mockAutomlResult: AutoMLFitResult = useMemo(
     () => ({
@@ -290,6 +310,62 @@ const App: React.FC = () => {
     });
   }, [analysisResult]);
 
+  const preprocChartData = useMemo(() => {
+    const baseCount = dataProfile?.recordsCount ?? 8500;
+    const missingBefore = dataProfile?.missingValues ?? 24;
+    const outlierBefore = Math.round((dataProfile?.noiseLevel ?? 0.15) * 100);
+    const outlierAfter = preprocConfig.outlierMethod !== 'none' ? 0 : outlierBefore;
+    const afterCount = preprocConfig.smoteEnabled
+      ? Math.round(baseCount * (preprocConfig.smoteStrategy === 'minority' ? 1.35 : 1.6))
+      : baseCount;
+    const classAfterB = preprocConfig.smoteEnabled
+      ? preprocConfig.smoteStrategy === 'minority' ? 48 : 70
+      : 30;
+    return {
+      baseCount,
+      afterCount,
+      classDistData: [
+        { name: 'Class A', before: 70, after: 70 },
+        { name: 'Class B', before: 30, after: classAfterB },
+      ],
+      qualityData: [
+        { name: '결측치', before: missingBefore, after: 0 },
+        { name: '이상치(%)', before: outlierBefore, after: outlierAfter },
+      ],
+    };
+  }, [dataProfile, preprocConfig]);
+
+  const preprocAfterSample = useMemo(() => {
+    if (!dataPreview) return null;
+    const lastIdx = dataPreview.headers.length - 1;
+    const labelMap: Record<string, number> = {};
+    let nextId = 0;
+    dataPreview.rows.forEach((row) => {
+      const v = row[lastIdx];
+      if (v !== '' && Number.isNaN(Number(v)) && !(v in labelMap)) labelMap[v] = nextId++;
+    });
+    const missingPlaceholder: Record<PreprocConfig['missingStrategy'], string> = {
+      mean: '~avg', median: '~med', drop: '(제거)', zero: '0',
+    };
+    const afterRows = dataPreview.rows.map((row) =>
+      row.map((cell, ci) => {
+        if (ci === lastIdx) {
+          if (cell !== '' && Number.isNaN(Number(cell))) return String(labelMap[cell] ?? 0);
+          return cell;
+        }
+        if (cell === '') return missingPlaceholder[preprocConfig.missingStrategy];
+        return cell;
+      })
+    );
+    return { headers: dataPreview.headers, rows: afterRows, labelMap };
+  }, [dataPreview, preprocConfig.missingStrategy]);
+
+  /** 업로드된 파일의 컬럼명 기반으로 온톨로지 템플릿 추천 (전체 분석 없이 즉시 표시) */
+  const uploadTemplateRecommendations = useMemo(() => {
+    if (!dataPreview) return [];
+    return getTemplateRecommendationsByColumns(dataPreview.headers, REFERENCE_TEMPLATES, 3);
+  }, [dataPreview]);
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-50">
       <AppSidebar
@@ -375,7 +451,7 @@ const App: React.FC = () => {
 
         {/* 1. 데이터 준비 */}
         {currentNav === 'data' && (
-          <div key="data" className="p-4 sm:p-6 lg:p-8 max-w-2xl">
+          <div key="data" className="p-4 sm:p-6 lg:p-8 max-w-3xl">
             <section className="bg-white p-5 sm:p-6 rounded-xl border border-slate-200 shadow-sm">
               <h2 className="text-lg font-bold mb-1 flex items-center gap-2 text-slate-800">
                 <Upload className="w-5 h-5 text-indigo-600" />
@@ -459,149 +535,189 @@ const App: React.FC = () => {
                 <p className="text-[10px] text-slate-400 pt-2">다음: 사이드바에서 <strong>전처리 &amp; 증강</strong>으로 이동해 전처리 설정 후 분석을 실행하세요.</p>
               </div>
             </section>
+
+            {/* 온톨로지 템플릿 추천 — 파일 업로드 후 표시 */}
+            {uploadTemplateRecommendations.length > 0 && (
+              <section className="mt-5 bg-white rounded-xl border border-indigo-100 shadow-sm overflow-hidden">
+                <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-indigo-600 shrink-0" />
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-800">온톨로지 템플릿 추천</h3>
+                    <p className="text-[11px] text-slate-500 mt-0.5">업로드된 컬럼명을 온톨로지와 매칭한 상위 참조 템플릿입니다. 전체 분석 실행 후 더 정확한 추천을 확인할 수 있습니다.</p>
+                  </div>
+                </div>
+                <div className="divide-y divide-slate-100">
+                  {uploadTemplateRecommendations.map(({ template, score, matchedFunctionIds }, idx) => {
+                    const relatedFns = template.recommendedFunctionIds
+                      .map((fid) => MES_ONTOLOGY.find((f) => f.id === fid))
+                      .filter(Boolean);
+                    const hasScore = score > 0;
+                    return (
+                      <div key={template.id} className="px-5 py-4 flex gap-4 items-start hover:bg-slate-50 transition-colors">
+                        {/* 순위 뱃지 */}
+                        <div className={`shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold mt-0.5 ${
+                          idx === 0 ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-500'
+                        }`}>
+                          {idx + 1}
+                        </div>
+                        <div className="min-w-0 flex-1 space-y-1.5">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-sm font-semibold text-slate-800">{template.name}</span>
+                            {hasScore && (
+                              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-100">
+                                컬럼 매칭 {score}개
+                              </span>
+                            )}
+                          </div>
+                          {/* 관련 MES 기능 뱃지 */}
+                          <div className="flex flex-wrap gap-1">
+                            {relatedFns.map((fn) => fn && (
+                              <span
+                                key={fn.id}
+                                className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${
+                                  matchedFunctionIds.includes(fn.id)
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : 'bg-slate-50 text-slate-500 border-slate-200'
+                                }`}
+                              >
+                                {fn.id} · {fn.name.split(' ')[0]}
+                                {matchedFunctionIds.includes(fn.id) && ' ✓'}
+                              </span>
+                            ))}
+                          </div>
+                          {template.summary && (
+                            <p className="text-xs text-slate-500 leading-relaxed">{template.summary}</p>
+                          )}
+                          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500">
+                            {template.modelName && template.modelName !== '-' && (
+                              <span><span className="font-medium text-slate-700">모델</span> {template.modelName}</span>
+                            )}
+                            {template.modelPerformance?.accuracy != null && (
+                              <span><span className="font-medium text-slate-700">정확도</span> {(template.modelPerformance.accuracy * 100).toFixed(1)}%</span>
+                            )}
+                            {template.modelPerformance?.rmse != null && (
+                              <span><span className="font-medium text-slate-700">RMSE</span> {template.modelPerformance.rmse}</span>
+                            )}
+                          </div>
+                          {template.preprocessingMethods && template.preprocessingMethods.length > 0 && (
+                            <div className="flex flex-wrap gap-1 pt-0.5">
+                              {template.preprocessingMethods.slice(0, 4).map((m) => (
+                                <span key={m} className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">
+                                  {m}
+                                </span>
+                              ))}
+                              {template.preprocessingMethods.length > 4 && (
+                                <span className="text-[10px] text-slate-400">+{template.preprocessingMethods.length - 4}</span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="px-5 py-3 bg-slate-50 border-t border-slate-100">
+                  <p className="text-[10px] text-slate-400">
+                    전체 템플릿은 <button type="button" onClick={() => setCurrentNav('ontology')} className="text-indigo-600 font-semibold hover:underline">Standard MES Ontology</button> 탭에서 확인할 수 있습니다.
+                  </p>
+                </div>
+              </section>
+            )}
+
+            {/* 파일 미업로드 시 안내 */}
+            {!uploadedProcessFile && (
+              <section className="mt-5 bg-slate-50 rounded-xl border border-dashed border-slate-200 px-5 py-6 text-center">
+                <Layers className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                <p className="text-xs font-semibold text-slate-500">파일을 업로드하면</p>
+                <p className="text-[11px] text-slate-400 mt-1">데이터 컬럼을 온톨로지와 자동 매칭하여 참조 템플릿을 추천해 드립니다.</p>
+              </section>
+            )}
           </div>
         )}
 
         {/* 1.5 전처리 & 증강 */}
         {currentNav === 'preprocess' && (
-          <div key="preprocess" className="p-4 sm:p-6 lg:p-8 max-w-2xl">
-            <section className="bg-white p-5 sm:p-6 rounded-xl border border-slate-200 shadow-sm">
-              <h2 className="text-lg font-bold mb-1 flex items-center gap-2 text-slate-800">
-                <SlidersHorizontal className="w-5 h-5 text-indigo-600" />
-                전처리 &amp; 증강
-              </h2>
-              <p className="text-xs text-slate-500 mb-5 leading-relaxed">
-                분석 전 데이터를 정제하고 클래스 불균형을 보정합니다.
-              </p>
+          <div key="preprocess" className="p-4 sm:p-6 lg:p-8">
+            <h1 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
+              <SlidersHorizontal className="w-5 h-5 text-indigo-600" />
+              전처리 &amp; 증강
+            </h1>
 
-              {/* Step indicator */}
-              <div className="flex items-center gap-1.5 mb-6 flex-wrap">
-                {PREPROC_STEP_LABELS.map((label, idx) => (
-                  <React.Fragment key={idx}>
-                    <button
-                      type="button"
-                      onClick={() => setPreprocActiveStep(idx)}
-                      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-                        preprocActiveStep === idx
-                          ? 'bg-indigo-600 text-white'
-                          : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
-                      }`}
-                    >
-                      <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
-                        preprocActiveStep === idx ? 'bg-white/20' : 'bg-slate-300 text-slate-600'
-                      }`}>
-                        {idx + 1}
-                      </span>
-                      {label}
-                    </button>
-                    {idx < PREPROC_STEP_LABELS.length - 1 && (
-                      <ChevronRight className="w-3 h-3 text-slate-300 shrink-0" />
-                    )}
-                  </React.Fragment>
-                ))}
+            {/* ── 1. 전처리 설정 컨트롤 바 ── */}
+            <section className="mb-4 bg-white rounded-xl border border-slate-200 shadow-sm">
+              {/* compact bar - 항상 표시 */}
+              <div className="px-4 py-3 flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-bold text-slate-600 flex items-center gap-1.5 mr-1 shrink-0">
+                  <SlidersHorizontal className="w-3.5 h-3.5 text-indigo-500" />설정
+                </span>
+                <select
+                  value={preprocConfig.missingStrategy}
+                  onChange={(e) => setPreprocConfig((c) => ({ ...c, missingStrategy: e.target.value as PreprocConfig['missingStrategy'] }))}
+                  className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+                >
+                  <option value="mean">결측치: 평균값</option>
+                  <option value="median">결측치: 중앙값</option>
+                  <option value="drop">결측치: 행 제거</option>
+                  <option value="zero">결측치: 0 대체</option>
+                </select>
+                <select
+                  value={preprocConfig.outlierMethod}
+                  onChange={(e) => setPreprocConfig((c) => ({ ...c, outlierMethod: e.target.value as PreprocConfig['outlierMethod'] }))}
+                  className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+                >
+                  <option value="iqr">이상치: IQR</option>
+                  <option value="zscore">이상치: Z-Score</option>
+                  <option value="none">이상치: 처리 안 함</option>
+                </select>
+                <select
+                  value={preprocConfig.scalingMethod}
+                  onChange={(e) => setPreprocConfig((c) => ({ ...c, scalingMethod: e.target.value as PreprocConfig['scalingMethod'] }))}
+                  className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+                >
+                  <option value="standard">스케일: Standard</option>
+                  <option value="minmax">스케일: MinMax</option>
+                  <option value="robust">스케일: Robust</option>
+                  <option value="none">스케일: 없음</option>
+                </select>
+                <div className="w-px h-4 bg-slate-200 mx-0.5 shrink-0" />
+                <label className="flex items-center gap-1.5 cursor-pointer shrink-0">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={preprocConfig.smoteEnabled}
+                    onClick={() => setPreprocConfig((c) => ({ ...c, smoteEnabled: !c.smoteEnabled }))}
+                    className={`relative w-8 h-4 rounded-full transition-colors shrink-0 ${preprocConfig.smoteEnabled ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${preprocConfig.smoteEnabled ? 'translate-x-4' : 'translate-x-0'}`} />
+                  </button>
+                  <span className="text-xs text-slate-600 font-medium">SMOTE</span>
+                </label>
+                <div className="ml-auto flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { setPreprocCompleted(true); setCurrentNav('run'); }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    전처리 완료 → 분석 실행
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPreprocSettingsExpanded((v) => !v)}
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-lg border border-slate-200 text-slate-500 hover:bg-slate-50"
+                  >
+                    {preprocSettingsExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                    고급 설정
+                  </button>
+                </div>
               </div>
 
-              {/* Step 1: 결측치 / 타입 처리 */}
-              {preprocActiveStep === 0 && (
-                <div className="space-y-5">
-                  <div>
-                    <p className="text-xs font-semibold text-slate-600 mb-2">결측치 처리 방법</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      {([
-                        { value: 'mean', label: '평균값 대체' },
-                        { value: 'median', label: '중앙값 대체' },
-                        { value: 'drop', label: '행 제거' },
-                        { value: 'zero', label: '0으로 대체' },
-                      ] as { value: PreprocConfig['missingStrategy']; label: string }[]).map((opt) => (
-                        <label
-                          key={opt.value}
-                          className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer text-xs font-medium transition-colors ${
-                            preprocConfig.missingStrategy === opt.value
-                              ? 'border-indigo-400 bg-indigo-50 text-indigo-700'
-                              : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="missingStrategy"
-                            value={opt.value}
-                            checked={preprocConfig.missingStrategy === opt.value}
-                            onChange={() => setPreprocConfig((c) => ({ ...c, missingStrategy: opt.value }))}
-                            className="sr-only"
-                          />
-                          {opt.label}
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                  <div>
-                    <p className="text-xs font-semibold text-slate-600 mb-2">이상치 처리</p>
-                    <div className="grid grid-cols-3 gap-2">
-                      {([
-                        { value: 'iqr', label: 'IQR 클리핑' },
-                        { value: 'zscore', label: 'Z-Score 제거' },
-                        { value: 'none', label: '처리 안 함' },
-                      ] as { value: PreprocConfig['outlierMethod']; label: string }[]).map((opt) => (
-                        <label
-                          key={opt.value}
-                          className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer text-xs font-medium transition-colors ${
-                            preprocConfig.outlierMethod === opt.value
-                              ? 'border-indigo-400 bg-indigo-50 text-indigo-700'
-                              : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="outlierMethod"
-                            value={opt.value}
-                            checked={preprocConfig.outlierMethod === opt.value}
-                            onChange={() => setPreprocConfig((c) => ({ ...c, outlierMethod: opt.value }))}
-                            className="sr-only"
-                          />
-                          {opt.label}
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Step 2: 스케일링 / 피처 엔지니어링 */}
-              {preprocActiveStep === 1 && (
-                <div className="space-y-5">
-                  <div>
-                    <p className="text-xs font-semibold text-slate-600 mb-2">스케일링 방법</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      {([
-                        { value: 'standard', label: 'StandardScaler' },
-                        { value: 'minmax', label: 'MinMaxScaler' },
-                        { value: 'robust', label: 'RobustScaler' },
-                        { value: 'none', label: '스케일링 안 함' },
-                      ] as { value: PreprocConfig['scalingMethod']; label: string }[]).map((opt) => (
-                        <label
-                          key={opt.value}
-                          className={`flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer text-xs font-medium transition-colors ${
-                            preprocConfig.scalingMethod === opt.value
-                              ? 'border-indigo-400 bg-indigo-50 text-indigo-700'
-                              : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100'
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="scalingMethod"
-                            value={opt.value}
-                            checked={preprocConfig.scalingMethod === opt.value}
-                            onChange={() => setPreprocConfig((c) => ({ ...c, scalingMethod: opt.value }))}
-                            className="sr-only"
-                          />
-                          {opt.label}
-                        </label>
-                      ))}
-                    </div>
-                  </div>
+              {/* 고급 설정 - 펼쳐질 때만 */}
+              {preprocSettingsExpanded && (
+                <div className="border-t border-slate-100 px-4 py-4 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-4">
                   <div>
                     <p className="text-xs font-semibold text-slate-600 mb-2">피처 엔지니어링 (다중 선택)</p>
-                    <div className="space-y-2">
+                    <div className="space-y-1.5">
                       {([
                         { value: 'polynomial', label: '다항식 특성', desc: '2차 교호 항 추가' },
                         { value: 'log', label: '로그 변환', desc: '양수 특성에 log(x+1) 적용' },
@@ -609,7 +725,7 @@ const App: React.FC = () => {
                       ] as { value: 'polynomial' | 'log' | 'timediff'; label: string; desc: string }[]).map((opt) => (
                         <label
                           key={opt.value}
-                          className={`flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer transition-colors ${
+                          className={`flex items-center gap-2.5 p-2 rounded-lg border cursor-pointer transition-colors ${
                             preprocConfig.featureEngineering.includes(opt.value)
                               ? 'border-indigo-400 bg-indigo-50'
                               : 'border-slate-200 bg-slate-50 hover:bg-slate-100'
@@ -626,80 +742,45 @@ const App: React.FC = () => {
                                   : c.featureEngineering.filter((x) => x !== opt.value),
                               }))
                             }
-                            className="w-4 h-4 rounded accent-indigo-600 shrink-0"
+                            className="w-3.5 h-3.5 rounded accent-indigo-600 shrink-0"
                           />
                           <div className="min-w-0">
                             <span className="text-xs font-semibold text-slate-700">{opt.label}</span>
-                            <span className="text-[10px] text-slate-400 ml-2">{opt.desc}</span>
+                            <span className="text-[10px] text-slate-400 ml-1.5">{opt.desc}</span>
                           </div>
                         </label>
                       ))}
                     </div>
                   </div>
-                </div>
-              )}
-
-              {/* Step 3: SMOTE 증강 */}
-              {preprocActiveStep === 2 && (
-                <div className="space-y-5">
-                  <div className="flex items-center justify-between p-3 rounded-lg bg-slate-50 border border-slate-200">
-                    <div className="min-w-0 mr-4">
-                      <p className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
-                        <Shuffle className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
-                        SMOTE 증강 활성화
-                      </p>
-                      <p className="text-[10px] text-slate-400 mt-0.5">소수 클래스 합성 샘플을 생성해 클래스 불균형 보정</p>
-                    </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={preprocConfig.smoteEnabled}
-                      onClick={() => setPreprocConfig((c) => ({ ...c, smoteEnabled: !c.smoteEnabled }))}
-                      className={`relative w-11 h-6 rounded-full transition-colors shrink-0 ${
-                        preprocConfig.smoteEnabled ? 'bg-indigo-600' : 'bg-slate-300'
-                      }`}
-                    >
-                      <span
-                        className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
-                          preprocConfig.smoteEnabled ? 'translate-x-5' : 'translate-x-0'
-                        }`}
-                      />
-                    </button>
-                  </div>
-
-                  {preprocConfig.smoteEnabled && (
-                    <>
-                      <div>
-                        <p className="text-xs font-semibold text-slate-600 mb-2">
-                          K 이웃 수{' '}
-                          <span className="text-indigo-600 font-bold">{preprocConfig.smoteK}</span>
-                        </p>
-                        <input
-                          type="range"
-                          min={1}
-                          max={10}
-                          value={preprocConfig.smoteK}
-                          onChange={(e) =>
-                            setPreprocConfig((c) => ({ ...c, smoteK: Number(e.target.value) }))
-                          }
-                          className="w-full accent-indigo-600"
-                        />
-                        <div className="flex justify-between text-[10px] text-slate-400 mt-1">
-                          <span>1 (빠름)</span>
-                          <span>10 (정밀)</span>
+                  <div>
+                    <p className="text-xs font-semibold text-slate-600 mb-2 flex items-center gap-1">
+                      <Shuffle className="w-3.5 h-3.5 text-indigo-500" />SMOTE 상세 설정
+                    </p>
+                    {preprocConfig.smoteEnabled ? (
+                      <div className="space-y-3">
+                        <div>
+                          <p className="text-[10px] text-slate-500 mb-1">K 이웃 수: <span className="font-bold text-indigo-600">{preprocConfig.smoteK}</span></p>
+                          <input
+                            type="range"
+                            min={1}
+                            max={10}
+                            value={preprocConfig.smoteK}
+                            onChange={(e) => setPreprocConfig((c) => ({ ...c, smoteK: Number(e.target.value) }))}
+                            className="w-full accent-indigo-600 h-1.5"
+                          />
+                          <div className="flex justify-between text-[9px] text-slate-400 mt-0.5">
+                            <span>1 (빠름)</span><span>10 (정밀)</span>
+                          </div>
                         </div>
-                      </div>
-                      <div>
-                        <p className="text-xs font-semibold text-slate-600 mb-2">샘플링 전략</p>
-                        <div className="space-y-2">
+                        <div className="space-y-1">
                           {([
-                            { value: 'auto', label: 'auto', desc: '모든 소수 클래스를 다수 클래스 수만큼 증강' },
-                            { value: 'minority', label: 'minority', desc: '가장 소수인 클래스만 증강' },
-                            { value: 'not_majority', label: 'not majority', desc: '다수 클래스를 제외한 모든 클래스 증강' },
+                            { value: 'auto', label: 'auto', desc: '소수 클래스 → 다수 클래스 수만큼' },
+                            { value: 'minority', label: 'minority', desc: '가장 소수인 클래스만' },
+                            { value: 'not_majority', label: 'not majority', desc: '다수 제외 모든 클래스' },
                           ] as { value: PreprocConfig['smoteStrategy']; label: string; desc: string }[]).map((opt) => (
                             <label
                               key={opt.value}
-                              className={`flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer transition-colors ${
+                              className={`flex items-center gap-2 p-1.5 rounded-lg border cursor-pointer transition-colors ${
                                 preprocConfig.smoteStrategy === opt.value
                                   ? 'border-indigo-400 bg-indigo-50'
                                   : 'border-slate-200 bg-slate-50 hover:bg-slate-100'
@@ -710,110 +791,290 @@ const App: React.FC = () => {
                                 name="smoteStrategy"
                                 value={opt.value}
                                 checked={preprocConfig.smoteStrategy === opt.value}
-                                onChange={() =>
-                                  setPreprocConfig((c) => ({ ...c, smoteStrategy: opt.value }))
-                                }
-                                className="w-4 h-4 accent-indigo-600 shrink-0"
+                                onChange={() => setPreprocConfig((c) => ({ ...c, smoteStrategy: opt.value }))}
+                                className="w-3.5 h-3.5 accent-indigo-600 shrink-0"
                               />
-                              <div className="min-w-0">
-                                <span className="text-xs font-mono font-semibold text-slate-700">{opt.label}</span>
-                                <span className="text-[10px] text-slate-400 block mt-0.5">{opt.desc}</span>
-                              </div>
+                              <span className="text-[10px] font-mono font-semibold text-slate-700">{opt.label}</span>
+                              <span className="text-[9px] text-slate-400 truncate">{opt.desc}</span>
                             </label>
                           ))}
                         </div>
                       </div>
-                      {dataProfile && (
-                        <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-lg">
-                          <p className="text-xs font-semibold text-emerald-700 mb-1">예상 증강 결과</p>
-                          <p className="text-[10px] text-emerald-600">
-                            원본{' '}
-                            <span className="font-bold">
-                              {dataProfile.recordsCount.toLocaleString()}건
-                            </span>{' '}
-                            → 증강 후 약{' '}
-                            <span className="font-bold">
-                              {Math.round(
-                                dataProfile.recordsCount *
-                                  (preprocConfig.smoteStrategy === 'minority' ? 1.3 : 1.5)
-                              ).toLocaleString()}
-                              건
-                            </span>{' '}
-                            (k={preprocConfig.smoteK} 이웃 기반 합성)
-                          </p>
-                        </div>
-                      )}
-                    </>
-                  )}
+                    ) : (
+                      <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-center">
+                        <p className="text-[10px] text-slate-400">SMOTE를 활성화하면 상세 설정이 표시됩니다</p>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
-
-              {/* 이전 / 다음 버튼 */}
-              <div className="flex items-center justify-between mt-6 pt-5 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setPreprocActiveStep((s) => Math.max(0, s - 1))}
-                  disabled={preprocActiveStep === 0}
-                  className="px-4 py-2 text-xs font-semibold rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  이전
-                </button>
-                {preprocActiveStep < 2 ? (
-                  <button
-                    type="button"
-                    onClick={() => setPreprocActiveStep((s) => s + 1)}
-                    className="px-4 py-2 text-xs font-semibold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700"
-                  >
-                    다음 단계
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPreprocCompleted(true);
-                      setCurrentNav('run');
-                    }}
-                    className="flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
-                  >
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    전처리 완료 → 분석 실행
-                  </button>
-                )}
-              </div>
             </section>
 
-            {/* 전처리 설정 요약 (완료 후 표시) */}
-            {preprocCompleted && (
-              <div className="mt-4 p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
-                <p className="text-xs font-bold text-emerald-700 mb-2 flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4" />
-                  전처리 설정 완료
+            {/* ── 2. Before / After 차트 ── */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-3">
+              <section className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                <p className="text-xs font-bold text-slate-700 mb-1 flex items-center gap-1.5">
+                  <BarChart3 className="w-3.5 h-3.5 text-indigo-500" />클래스 분포
                 </p>
-                <div className="space-y-1 text-[10px] text-emerald-700">
+                <p className="text-[10px] text-slate-400 mb-3">설정 변경 시 즉시 반영 · 시뮬레이션 기반</p>
+                <ResponsiveContainer width="100%" height={150}>
+                  <BarChart data={preprocChartData.classDistData} barCategoryGap="35%" barGap={3}>
+                    <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={28} />
+                    <Tooltip
+                      contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
+                      formatter={(v: number, name: string) => [`${v}건`, name === 'before' ? '전처리 전' : '전처리 후']}
+                    />
+                    <Bar dataKey="before" name="before" fill="#cbd5e1" radius={[3, 3, 0, 0]} />
+                    <Bar dataKey="after" name="after" fill="#6366f1" radius={[3, 3, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+                <div className="flex items-center gap-3 mt-1 justify-center">
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-slate-300 inline-block" /><span className="text-[10px] text-slate-500">전처리 전</span></span>
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-indigo-500 inline-block" /><span className="text-[10px] text-slate-500">전처리 후</span></span>
+                </div>
+              </section>
+              <section className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                <p className="text-xs font-bold text-slate-700 mb-1 flex items-center gap-1.5">
+                  <BarChart3 className="w-3.5 h-3.5 text-emerald-500" />데이터 품질 지표
+                </p>
+                <p className="text-[10px] text-slate-400 mb-3">결측치·이상치 처리 효과</p>
+                <ResponsiveContainer width="100%" height={150}>
+                  <BarChart data={preprocChartData.qualityData} barCategoryGap="35%" barGap={3}>
+                    <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                    <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={28} />
+                    <Tooltip
+                      contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
+                      formatter={(v: number, name: string) => [v, name === 'before' ? '전처리 전' : '전처리 후']}
+                    />
+                    <Bar dataKey="before" name="before" fill="#fca5a5" radius={[3, 3, 0, 0]} />
+                    <Bar dataKey="after" name="after" fill="#86efac" radius={[3, 3, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+                <div className="flex items-center gap-3 mt-1 justify-center">
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-red-300 inline-block" /><span className="text-[10px] text-slate-500">전처리 전</span></span>
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-green-300 inline-block" /><span className="text-[10px] text-slate-500">전처리 후</span></span>
+                </div>
+              </section>
+            </div>
+
+            {/* 레코드 수 요약 */}
+            <div className="flex items-center gap-3 mb-4 bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
+              <div className="flex-1 p-2 rounded-lg bg-slate-50 border border-slate-200 text-center">
+                <p className="text-[10px] text-slate-500 mb-0.5">원본 데이터</p>
+                <p className="text-sm font-bold text-slate-800">{preprocChartData.baseCount.toLocaleString()}건</p>
+              </div>
+              <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
+              <div className={`flex-1 p-2 rounded-lg border text-center ${preprocChartData.afterCount > preprocChartData.baseCount ? 'bg-indigo-50 border-indigo-200' : 'bg-slate-50 border-slate-200'}`}>
+                <p className="text-[10px] text-slate-500 mb-0.5">전처리 후</p>
+                <p className={`text-sm font-bold ${preprocChartData.afterCount > preprocChartData.baseCount ? 'text-indigo-700' : 'text-slate-800'}`}>
+                  {preprocChartData.afterCount.toLocaleString()}건
+                </p>
+                {preprocChartData.afterCount > preprocChartData.baseCount && (
+                  <p className="text-[9px] text-indigo-500 mt-0.5">
+                    +{(preprocChartData.afterCount - preprocChartData.baseCount).toLocaleString()} (SMOTE)
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* ── 3. Before / After 데이터 샘플 ── */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+              {/* Before: 원본 데이터 */}
+              <section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+                  <h2 className="text-xs font-bold text-slate-700 flex items-center gap-2">
+                    <FileText className="w-3.5 h-3.5 text-slate-400" />
+                    원본 데이터 샘플
+                  </h2>
+                  {dataPreview && (
+                    <span className="text-[10px] text-slate-400 bg-slate-50 px-2 py-0.5 rounded-full border border-slate-200">
+                      첫 5행 · {dataPreview.headers.length}개 컬럼
+                    </span>
+                  )}
+                </div>
+                {dataPreview ? (
+                  <>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-xs">
+                        <thead>
+                          <tr className="bg-slate-50 border-b border-slate-100">
+                            <th className="px-3 py-2 text-slate-300 font-semibold text-center w-8 shrink-0">#</th>
+                            {dataPreview.headers.map((h, i) => (
+                              <th
+                                key={i}
+                                className={`px-3 py-2 text-left font-semibold whitespace-nowrap ${
+                                  i === dataPreview.headers.length - 1
+                                    ? 'text-indigo-600 bg-indigo-50/60'
+                                    : 'text-slate-600'
+                                }`}
+                              >
+                                {h}
+                                {i === dataPreview.headers.length - 1 && (
+                                  <span className="ml-1 text-[9px] font-normal text-indigo-400">target</span>
+                                )}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {dataPreview.rows.map((row, ri) => (
+                            <tr key={ri} className={`border-b border-slate-50 ${ri % 2 === 0 ? 'bg-white' : 'bg-slate-50/40'}`}>
+                              <td className="px-3 py-1.5 text-slate-300 font-mono text-center">{ri + 1}</td>
+                              {row.map((cell, ci) => {
+                                const isTarget = ci === row.length - 1;
+                                const isNonNumeric = cell !== '' && Number.isNaN(Number(cell));
+                                return (
+                                  <td
+                                    key={ci}
+                                    className={`px-3 py-1.5 whitespace-nowrap font-mono ${
+                                      isTarget
+                                        ? 'font-semibold text-indigo-600 bg-indigo-50/30'
+                                        : isNonNumeric
+                                        ? 'text-amber-600'
+                                        : 'text-slate-700'
+                                    }`}
+                                  >
+                                    {cell}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 flex items-center gap-4 flex-wrap">
+                      <span className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                        <span className="w-2 h-2 rounded-sm bg-indigo-200 inline-block" />마지막 컬럼 = 타깃
+                      </span>
+                      <span className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                        <span className="w-2 h-2 rounded-sm bg-amber-200 inline-block" />문자열 → 자동 인코딩
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="py-8 text-center">
+                    <Upload className="w-8 h-8 mx-auto mb-2 text-slate-200" />
+                    <p className="text-xs text-slate-400 mb-1">데이터 준비 탭에서 파일을 업로드하면 샘플 데이터가 표시됩니다</p>
+                    <button
+                      type="button"
+                      onClick={() => setCurrentNav('data')}
+                      className="mt-1 text-xs font-semibold text-indigo-600 hover:text-indigo-700"
+                    >
+                      데이터 준비 탭으로 이동 →
+                    </button>
+                  </div>
+                )}
+              </section>
+
+              {/* After: 전처리 후 시뮬레이션 */}
+              <section className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+                  <h2 className="text-xs font-bold text-slate-700 flex items-center gap-2">
+                    <Zap className="w-3.5 h-3.5 text-indigo-500" />
+                    전처리 후 (시뮬레이션)
+                  </h2>
+                  <span className="text-[10px] text-indigo-500 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-200">
+                    설정 연동
+                  </span>
+                </div>
+                {preprocAfterSample ? (
+                  <>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-xs">
+                        <thead>
+                          <tr className="bg-indigo-50/50 border-b border-slate-100">
+                            <th className="px-3 py-2 text-slate-300 font-semibold text-center w-8 shrink-0">#</th>
+                            {preprocAfterSample.headers.map((h, i) => (
+                              <th
+                                key={i}
+                                className={`px-3 py-2 text-left font-semibold whitespace-nowrap ${
+                                  i === preprocAfterSample.headers.length - 1
+                                    ? 'text-indigo-600 bg-indigo-50/60'
+                                    : 'text-slate-600'
+                                }`}
+                              >
+                                {h}
+                                {i === preprocAfterSample.headers.length - 1 && (
+                                  <span className="ml-1 text-[9px] font-normal text-indigo-400">encoded</span>
+                                )}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {preprocAfterSample.rows.map((row, ri) => (
+                            <tr key={ri} className={`border-b border-slate-50 ${ri % 2 === 0 ? 'bg-white' : 'bg-indigo-50/20'}`}>
+                              <td className="px-3 py-1.5 text-slate-300 font-mono text-center">{ri + 1}</td>
+                              {row.map((cell, ci) => {
+                                const origCell = dataPreview!.rows[ri]?.[ci] ?? '';
+                                const isTarget = ci === row.length - 1;
+                                const wasEncoded = isTarget && origCell !== '' && Number.isNaN(Number(origCell)) && cell !== origCell;
+                                const wasFilled = !isTarget && origCell === '' && cell !== '';
+                                return (
+                                  <td
+                                    key={ci}
+                                    className={`px-3 py-1.5 whitespace-nowrap font-mono ${
+                                      isTarget
+                                        ? 'font-semibold text-indigo-600 bg-indigo-50/30'
+                                        : wasEncoded || wasFilled
+                                        ? 'text-emerald-600 font-semibold'
+                                        : 'text-slate-700'
+                                    }`}
+                                  >
+                                    {cell}
+                                    {wasEncoded && <span className="ml-1 text-[8px] text-indigo-400 font-sans">[enc]</span>}
+                                    {wasFilled && <span className="ml-1 text-[8px] text-emerald-400 font-sans">[fill]</span>}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                          {preprocConfig.smoteEnabled && (
+                            <tr className="bg-indigo-50/40 border-t border-indigo-100">
+                              <td colSpan={preprocAfterSample.headers.length + 1} className="px-3 py-2 text-[10px] text-indigo-500 font-semibold text-center">
+                                + {(preprocChartData.afterCount - preprocChartData.baseCount).toLocaleString()}행 합성 (SMOTE 시뮬레이션)
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="px-4 py-2 bg-indigo-50/30 border-t border-slate-100 flex items-center gap-4 flex-wrap">
+                      <span className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                        <span className="w-2 h-2 rounded-sm bg-emerald-200 inline-block" />변환된 값
+                      </span>
+                      <span className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                        <span className="w-2 h-2 rounded-sm bg-indigo-200 inline-block" />타깃 인코딩
+                      </span>
+                      <span className="ml-auto text-[9px] text-slate-400">시뮬레이션 기반 · 실제 결과와 다를 수 있음</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="py-8 text-center">
+                    <Zap className="w-8 h-8 mx-auto mb-2 text-slate-200" />
+                    <p className="text-xs text-slate-400">원본 데이터를 업로드하면 전처리 후 예상 결과가 표시됩니다</p>
+                  </div>
+                )}
+              </section>
+            </div>
+
+            {/* 전처리 설정 완료 요약 */}
+            {preprocCompleted && (
+              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-start gap-3">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <div className="space-y-1 text-[10px] text-emerald-700 min-w-0">
+                  <p className="text-xs font-bold text-emerald-700 mb-1">전처리 설정 완료</p>
                   <p>
-                    결측치:{' '}
-                    {{ mean: '평균값 대체', median: '중앙값 대체', drop: '행 제거', zero: '0 대체' }[
-                      preprocConfig.missingStrategy
-                    ]}{' '}
-                    · 이상치:{' '}
-                    {{ iqr: 'IQR 클리핑', zscore: 'Z-Score 제거', none: '처리 안 함' }[
-                      preprocConfig.outlierMethod
-                    ]}
+                    결측치: {{ mean: '평균값 대체', median: '중앙값 대체', drop: '행 제거', zero: '0 대체' }[preprocConfig.missingStrategy]}
+                    {' · '}이상치: {{ iqr: 'IQR 클리핑', zscore: 'Z-Score 제거', none: '처리 안 함' }[preprocConfig.outlierMethod]}
                   </p>
                   <p>
-                    스케일링:{' '}
-                    {{ standard: 'StandardScaler', minmax: 'MinMaxScaler', robust: 'RobustScaler', none: '없음' }[
-                      preprocConfig.scalingMethod
-                    ]}
-                    {preprocConfig.featureEngineering.length > 0 &&
-                      ` · 피처 엔지니어링: ${preprocConfig.featureEngineering.join(', ')}`}
+                    스케일링: {{ standard: 'StandardScaler', minmax: 'MinMaxScaler', robust: 'RobustScaler', none: '없음' }[preprocConfig.scalingMethod]}
+                    {preprocConfig.featureEngineering.length > 0 && ` · 피처 엔지니어링: ${preprocConfig.featureEngineering.join(', ')}`}
                   </p>
-                  <p>
-                    SMOTE:{' '}
-                    {preprocConfig.smoteEnabled
-                      ? `활성화 (k=${preprocConfig.smoteK}, ${preprocConfig.smoteStrategy})`
-                      : '비활성화'}
-                  </p>
+                  <p>SMOTE: {preprocConfig.smoteEnabled ? `활성화 (k=${preprocConfig.smoteK}, ${preprocConfig.smoteStrategy})` : '비활성화'}</p>
                 </div>
               </div>
             )}

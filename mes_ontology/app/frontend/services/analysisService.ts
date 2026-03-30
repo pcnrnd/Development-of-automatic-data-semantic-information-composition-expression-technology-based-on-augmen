@@ -1,4 +1,4 @@
-import { DataProfile, IndustryType, MESFunction, MatchingResult } from '../types';
+import { DataProfile, IndustryType, MESFunction, MatchingResult, ResultTemplate } from '../types';
 
 /**
  * 프로파일 키워드(표준명)와 MES 함수 ID 매핑 (규칙 기반 매칭용)
@@ -140,6 +140,40 @@ export async function analyzeDataAndMatch(
   const augmentationSuggestions = buildAugmentationSuggestions(profile, matches);
 
   return { matches, summary, augmentationSuggestions };
+}
+
+/**
+ * CSV 헤더(컬럼명) 목록을 바탕으로 온톨로지 함수 ID별 매칭 점수를 계산하여
+ * 가장 관련성 높은 참조 템플릿 top-N개를 반환합니다.
+ * 데이터 업로드 직후 전체 분석 없이 빠른 미리보기 추천에 사용합니다.
+ */
+export function getTemplateRecommendationsByColumns(
+  headers: string[],
+  templates: ResultTemplate[],
+  topN = 3,
+): { template: ResultTemplate; score: number; matchedFunctionIds: string[] }[] {
+  const functionScores: Record<string, number> = {};
+  for (const header of headers) {
+    const hints = getHintsForFeature(header);
+    if (hints) {
+      for (const fnId of hints) {
+        functionScores[fnId] = (functionScores[fnId] ?? 0) + 1;
+      }
+    }
+  }
+
+  const scored = templates.map((template) => {
+    const matchedFunctionIds = template.recommendedFunctionIds.filter(
+      (fnId) => (functionScores[fnId] ?? 0) > 0,
+    );
+    const score = template.recommendedFunctionIds.reduce(
+      (sum, fnId) => sum + (functionScores[fnId] ?? 0),
+      0,
+    );
+    return { template, score, matchedFunctionIds };
+  });
+
+  return scored.sort((a, b) => b.score - a.score).slice(0, topN);
 }
 
 export const analysisService = {

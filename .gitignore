@@ -19,3 +19,5 @@ data
 catboost_info
 *.pyc
 processed_images
+.claude
+.cursor
