@@ -15,7 +15,7 @@ services:
     volumes:
       - neo4j_data:/data
       - ./app/ontology:/import/ontology
-      - ./plugins:/plugins
+      - ./plugins:/var/lib/neo4j/plugins
     healthcheck:
       test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "passwd", "RETURN 1"]
       interval: 30s

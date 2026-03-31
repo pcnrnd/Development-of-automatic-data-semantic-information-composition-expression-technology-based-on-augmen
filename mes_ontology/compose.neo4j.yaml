@@ -1,0 +1,22 @@
+services:
+  neo4j:
+    image: neo4j
+    container_name: neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/passwd
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: "n10s.*,apoc.*"
+      NEO4J_dbms_security_auth__minimum__password__length: 6
+      NEO4J_server_memory_heap_initial__size: 1G
+      NEO4J_server_memory_heap_max__size: 2G
+    volumes:
+      - ./neo4j/data:/data
+      - ./neo4j/plugins:/var/lib/neo4j/plugins
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "passwd", "RETURN 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5

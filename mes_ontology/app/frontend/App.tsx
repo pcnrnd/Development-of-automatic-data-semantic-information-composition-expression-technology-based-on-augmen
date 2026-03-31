@@ -8,9 +8,14 @@ import {
   PolarRadiusAxis,
   BarChart,
   Bar,
+  LineChart,
+  Line,
+  ScatterChart,
+  Scatter,
   XAxis,
   YAxis,
   Tooltip,
+  Legend,
   Cell,
 } from 'recharts';
 import {
@@ -36,7 +41,7 @@ import DashboardHeader from './components/DashboardHeader';
 import AppSidebar, { type NavId } from './components/AppSidebar';
 import OntologyVisualizer from './components/OntologyVisualizer';
 import OntologyGraph from './components/OntologyGraph';
-import { IndustryType, DataProfile, MatchingResult } from './types';
+import { IndustryType, DataProfile, MatchingResult, type ResultTemplate } from './types';
 
 /** 산업별 데모용 프로파일 (업로드 없을 때 추천 결과가 산업에 따라 달라지도록) */
 function getMockProfileForIndustry(industry: IndustryType): DataProfile {
@@ -149,9 +154,71 @@ function preprocMethodsFromConfig(config: PreprocConfig): string[] {
   return methods;
 }
 
+/**
+ * 템플릿의 전처리 문자열 목록을 현재 프론트 `preprocConfig`로 근사 매핑합니다.
+ * (모든 템플릿 항목을 1:1로 전부 반영하긴 어렵기 때문에, 지원 가능한 항목 위주로 적용)
+ */
+function applyTemplateToPreprocConfig(template: ResultTemplate, prev: PreprocConfig): PreprocConfig {
+  const methods = template.preprocessingMethods ?? [];
+  const has = (re: RegExp) => methods.some((m) => re.test(m));
+
+  const next: PreprocConfig = { ...prev };
+
+  // 결측치
+  if (has(/결측.*(제거|행\s*제거)/i)) next.missingStrategy = 'drop';
+  else if (has(/0\s*대체/i)) next.missingStrategy = 'zero';
+  else if (has(/결측.*(보간|대체)/i)) next.missingStrategy = 'median';
+
+  // 이상치
+  if (has(/이상치.*(처리\s*안\s*함|미처리|none)/i)) next.outlierMethod = 'none';
+  else if (has(/(z-?score|zscore)/i)) next.outlierMethod = 'zscore';
+  else if (has(/iqr/i) || has(/이상치.*제거/i)) next.outlierMethod = 'iqr';
+
+  // 스케일링
+  if (has(/StandardScaler/)) next.scalingMethod = 'standard';
+  else if (has(/MinMaxScaler/)) next.scalingMethod = 'minmax';
+  else if (has(/RobustScaler/)) next.scalingMethod = 'robust';
+  else if (has(/스케일.*없음|없음\s*$/i)) next.scalingMethod = 'none';
+
+  // 피처 엔지니어링
+  const fe: PreprocConfig['featureEngineering'] = [];
+  if (has(/다항식/)) fe.push('polynomial');
+  if (has(/로그/)) fe.push('log');
+  if (has(/시간\s*차분|차분/i)) fe.push('timediff');
+  if (fe.length > 0) next.featureEngineering = fe;
+
+  // 증강(= SMOTE 근사): 클래스 균형/샘플링 검토가 있으면 활성화
+  const wantsSmote = has(/클래스\s*균형|SMOTE|샘플링/i);
+  if (wantsSmote) {
+    next.smoteEnabled = true;
+    // 텍스트에 구체 전략이 없으면 minority가 가장 자연스러운 기본값
+    if (has(/소수|minority/i)) next.smoteStrategy = 'minority';
+    else if (has(/not[_\s-]*majority|not[_\s-]*majority/i)) next.smoteStrategy = 'not_majority';
+    else next.smoteStrategy = 'minority';
+  } else {
+    next.smoteEnabled = false;
+  }
+
+  return next;
+}
+
 /** API 응답에 없을 때 사용할 전처리·시각화 기본값 (UI 블록 항상 표시) */
 const DEFAULT_PREPROCESSING_METHODS = ['StandardScaler', '결측치 중앙값 대체', '이상치 IQR 클리핑'];
 const DEFAULT_VISUALIZATION_METHODS = ['산점도', '상관관계 행렬', '히트맵'];
+
+const CHART_PALETTE = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316', '#84cc16'];
+
+/** 컬럼이 시계열(시간축)인지 헤더명·값 패턴으로 판단 */
+function isTimeSeriesColumn(header: string, sampleValues: string[]): boolean {
+  if (/^(timestamp|time|date|datetime|ts|시간|날짜|일시|일자|측정일)/i.test(header.trim())) return true;
+  const nonEmpty = sampleValues.filter((v) => v !== '');
+  if (nonEmpty.length === 0) return false;
+  const isoDate = /^\d{4}-\d{2}-\d{2}/;
+  const korDate = /^\d{4}[./]\d{2}[./]\d{2}/;
+  const unixTs = /^\d{10,13}$/;
+  const matched = nonEmpty.filter((v) => isoDate.test(v) || korDate.test(v) || unixTs.test(v)).length;
+  return matched / nonEmpty.length >= 0.5;
+}
 
 const App: React.FC = () => {
   const [currentNav, setCurrentNav] = useState<NavId>('data');
@@ -177,9 +244,14 @@ const App: React.FC = () => {
     } catch {}
   };
 
-  // 파일 업로드 시 샘플 미리보기 파싱
+  // 파일 업로드 시 샘플 미리보기 + 전체 통계 파싱
   useEffect(() => {
-    if (!uploadedProcessFile) { setDataPreview(null); return; }
+    if (!uploadedProcessFile) {
+      setDataPreview(null);
+      setDataProfile(null);
+      setFileClassCounts(null);
+      return;
+    }
     let cancelled = false;
     (async () => {
       const raw = await uploadedProcessFile.text();
@@ -190,8 +262,66 @@ const App: React.FC = () => {
       const delim = lines[0].includes(';') ? ';' : ',';
       const strip = (s: string) => s.replace(/^"|"$/g, '').trim();
       const headers = lines[0].split(delim).map(strip);
-      const rows = lines.slice(1, 6).map((l) => l.split(delim).map(strip));
-      setDataPreview({ headers, rows });
+      const sampleRows = lines.slice(1, 6).map((l) => l.split(delim).map(strip));
+      setDataPreview({ headers, rows: sampleRows });
+
+      // ── 전체 파일에서 실제 통계 계산 ──
+      const recordsCount = lines.length - 1;
+      const lastIdx = headers.length - 1;
+
+      // 결측치 집계 (최대 500행 샘플, 전체 비율로 추정)
+      const statSample = lines.slice(1, 501).map((l) => l.split(delim).map(strip));
+      let missingInSample = 0;
+      statSample.forEach((row) => row.forEach((cell) => { if (cell === '') missingInSample++; }));
+      const missingValues = Math.round(missingInSample * (recordsCount / statSample.length));
+
+      // 수치형 컬럼 변동계수(CV) 평균으로 noiseLevel 추정
+      const numericColVals: number[][] = [];
+      headers.slice(0, lastIdx).forEach((_, ci) => {
+        const vals = statSample.map((r) => r[ci]).filter((v) => v !== '' && !Number.isNaN(Number(v))).map(Number);
+        if (vals.length >= statSample.length * 0.5) numericColVals.push(vals);
+      });
+      let noiseLevel = 0.05;
+      if (numericColVals.length > 0) {
+        const cvs = numericColVals.map((col) => {
+          const mean = col.reduce((a, b) => a + b, 0) / col.length;
+          if (Math.abs(mean) < 1e-10) return 0;
+          const std = Math.sqrt(col.reduce((a, b) => a + (b - mean) ** 2, 0) / col.length);
+          return std / Math.abs(mean);
+        });
+        noiseLevel = Math.min(cvs.reduce((a, b) => a + b, 0) / cvs.length * 0.3, 0.5);
+      }
+
+      setDataProfile({
+        features: headers.slice(0, lastIdx),
+        recordsCount,
+        missingValues,
+        noiseLevel,
+        seasonality: false,
+        dataTypes: Object.fromEntries(headers.map((h) => [h, 'Continuous'])),
+      });
+
+      // 타겟 컬럼 전수 집계 → 분류 여부 판단 후 클래스 분포 저장
+      const allTargetValues = lines.slice(1).map((l) => {
+        const cells = l.split(delim).map(strip);
+        return cells[lastIdx] ?? '';
+      }).filter((v) => v !== '');
+      const uniqueTargetVals = [...new Set(allTargetValues)];
+      // 문자열 레이블이거나, 숫자여도 정수·고유값 ≤ 20·비율 < 10% 이면 분류로 판단
+      const hasStringLabel = allTargetValues.some((v) => Number.isNaN(Number(v)));
+      const hasNumericClassLabel = !hasStringLabel &&
+        uniqueTargetVals.length >= 2 &&
+        uniqueTargetVals.length <= 20 &&
+        uniqueTargetVals.every((v) => Number.isInteger(Number(v))) &&
+        uniqueTargetVals.length / allTargetValues.length < 0.1;
+      const isClassification = hasStringLabel || hasNumericClassLabel;
+      if (isClassification) {
+        const counts: Record<string, number> = {};
+        allTargetValues.forEach((v) => { counts[v] = (counts[v] ?? 0) + 1; });
+        setFileClassCounts(counts);
+      } else {
+        setFileClassCounts(null);
+      }
     })();
     return () => { cancelled = true; };
   }, [uploadedProcessFile]);
@@ -217,6 +347,33 @@ const App: React.FC = () => {
   const [preprocCompleted, setPreprocCompleted] = useState(false);
   const [dataPreview, setDataPreview] = useState<{ headers: string[]; rows: string[][] } | null>(null);
   const [preprocSettingsExpanded, setPreprocSettingsExpanded] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState<ResultTemplate | null>(null);
+  const [analysisColumn, setAnalysisColumn] = useState<string>('');
+  const [analysisClassFilter, setAnalysisClassFilter] = useState<string[]>([]);
+  const [extraColumns, setExtraColumns] = useState<string[]>([]);
+  const [chartTypeOverride, setChartTypeOverride] = useState<'line' | 'bar' | 'scatter' | null>(null);
+  const [xColumn, setXColumn] = useState<string>(''); // '' = 자동 (시계열 컬럼 or 인덱스)
+  /** 업로드된 파일 전체에서 집계한 클래스별 실제 레코드 수 (분류 문제일 때만 non-null) */
+  const [fileClassCounts, setFileClassCounts] = useState<Record<string, number> | null>(null);
+
+  // 업로드 데이터/산업이 바뀌면 템플릿 선택과 적용된 전처리 세팅도 초기화합니다.
+  useEffect(() => {
+    setSelectedTemplate(null);
+    setPreprocConfig(DEFAULT_PREPROC_CONFIG);
+    setPreprocCompleted(false);
+  }, [industry, dataPreview]);
+
+  // dataPreview가 바뀌면 컬럼 탐색 초기화
+  useEffect(() => {
+    if (dataPreview && dataPreview.headers.length > 1) {
+      setAnalysisColumn(dataPreview.headers[0]);
+    } else {
+      setAnalysisColumn('');
+    }
+    setAnalysisClassFilter([]);
+    setChartTypeOverride(null);
+    setXColumn('');
+  }, [dataPreview]);
 
   const mockAutomlResult: AutoMLFitResult = useMemo(
     () => ({
@@ -270,6 +427,13 @@ const App: React.FC = () => {
     setDataProfile(profile);
     setCurrentStep(1);
 
+    const templatePreprocMethods = selectedTemplate?.preprocessingMethods?.length
+      ? selectedTemplate.preprocessingMethods
+      : null;
+    const templateVizMethods = selectedTemplate?.visualizationMethods?.length
+      ? selectedTemplate.visualizationMethods
+      : null;
+
     const automlRes = await automlFit(features, target, 'classification');
     const configuredMethods = preprocCompleted ? preprocMethodsFromConfig(preprocConfig) : DEFAULT_PREPROCESSING_METHODS;
     if (automlRes.ok) {
@@ -277,16 +441,24 @@ const App: React.FC = () => {
       if (data.best_model != null && Number.isFinite(data.best_score)) {
         setAutomlResult({
           ...data,
-          preprocessing_methods: data.preprocessing_methods?.length ? data.preprocessing_methods : configuredMethods,
-          visualization_methods: data.visualization_methods?.length ? data.visualization_methods : DEFAULT_VISUALIZATION_METHODS,
+          preprocessing_methods: templatePreprocMethods ?? (data.preprocessing_methods?.length ? data.preprocessing_methods : configuredMethods),
+          visualization_methods: templateVizMethods ?? (data.visualization_methods?.length ? data.visualization_methods : DEFAULT_VISUALIZATION_METHODS),
         });
       } else {
-        setAutomlResult({ ...mockAutomlResult, preprocessing_methods: configuredMethods });
+        setAutomlResult({
+          ...mockAutomlResult,
+          preprocessing_methods: templatePreprocMethods ?? configuredMethods,
+          visualization_methods: templateVizMethods ?? mockAutomlResult.visualization_methods,
+        });
         setAutomlFallbackReason('모델 도출 결과가 없어 시뮬레이션 결과를 표시합니다.');
       }
     } else {
       await new Promise((r) => setTimeout(r, 1200));
-      setAutomlResult({ ...mockAutomlResult, preprocessing_methods: configuredMethods });
+      setAutomlResult({
+        ...mockAutomlResult,
+        preprocessing_methods: templatePreprocMethods ?? configuredMethods,
+        visualization_methods: templateVizMethods ?? mockAutomlResult.visualization_methods,
+      });
       if ('error' in automlRes && automlRes.error) setAutomlFallbackReason(automlRes.error);
     }
     setCurrentStep(2);
@@ -312,30 +484,76 @@ const App: React.FC = () => {
     });
   }, [analysisResult]);
 
+  // 분류/회귀 판단: fileClassCounts(전체 파일 집계)가 있으면 그것 기준, 없으면 5행 샘플로 보조 판단
+  const isClassificationTask = useMemo(() => {
+    if (fileClassCounts !== null) return true;
+    if (!dataPreview || dataPreview.rows.length === 0) return false;
+    const lastIdx = dataPreview.headers.length - 1;
+    const targetValues = dataPreview.rows.map((r) => r[lastIdx]).filter((v) => v !== '');
+    if (targetValues.length === 0) return false;
+    if (targetValues.some((v) => Number.isNaN(Number(v)))) return true;
+    // 숫자형 레이블: 정수 + 고유값 ≤ 20 이면 분류로 간주
+    const unique = [...new Set(targetValues)];
+    return unique.length >= 2 && unique.length <= 20 && unique.every((v) => Number.isInteger(Number(v)));
+  }, [dataPreview, fileClassCounts]);
+
   const preprocChartData = useMemo(() => {
-    const baseCount = dataProfile?.recordsCount ?? 8500;
-    const missingBefore = dataProfile?.missingValues ?? 24;
-    const outlierBefore = Math.round((dataProfile?.noiseLevel ?? 0.15) * 100);
+    // dataProfile이 없으면(파일 미업로드 상태) 의미없는 수치를 보여주지 않음
+    const baseCount = dataProfile?.recordsCount ?? 0;
+    const missingBefore = dataProfile?.missingValues ?? 0;
+    const outlierBefore = dataProfile ? Math.round(dataProfile.noiseLevel * 100) : 0;
     const outlierAfter = preprocConfig.outlierMethod !== 'none' ? 0 : outlierBefore;
     const afterCount = preprocConfig.smoteEnabled
       ? Math.round(baseCount * (preprocConfig.smoteStrategy === 'minority' ? 1.35 : 1.6))
       : baseCount;
-    const classAfterB = preprocConfig.smoteEnabled
-      ? preprocConfig.smoteStrategy === 'minority' ? 48 : 70
-      : 30;
+
+    // 클래스 분포: 전체 파일에서 집계한 fileClassCounts 사용 (5행 샘플 스케일 업 제거)
+    let classDistData: { name: string; before: number; after: number }[] | null = null;
+    if (fileClassCounts && Object.keys(fileClassCounts).length > 0) {
+      const counts = fileClassCounts as Record<string, number>;
+      const maxCount = Math.max(...Object.values(counts));
+      classDistData = Object.entries(counts).map(([name, count]) => {
+        const after = preprocConfig.smoteEnabled
+          ? (preprocConfig.smoteStrategy === 'auto' || preprocConfig.smoteStrategy === 'minority'
+            ? maxCount
+            : Math.round(count * 1.3))
+          : count;
+        return { name, before: count, after };
+      });
+    }
+
+    // 스택 바 차트용: 원본 + 합성(delta) 분리
+    const stackedData = classDistData?.map((d) => ({
+      name: d.name,
+      원본: d.before,
+      합성: Math.max(0, d.after - d.before),
+    })) ?? null;
+
+    // 불균형 비율 (IR = 최다 / 최소)
+    let irBefore: number | null = null;
+    let irAfter: number | null = null;
+    if (classDistData && classDistData.length >= 2) {
+      const befores = classDistData.map((d) => d.before);
+      const afters = classDistData.map((d) => d.after);
+      const bMin = Math.min(...befores); const bMax = Math.max(...befores);
+      const aMin = Math.min(...afters);  const aMax = Math.max(...afters);
+      irBefore = bMin > 0 ? Math.round((bMax / bMin) * 10) / 10 : null;
+      irAfter  = aMin > 0 ? Math.round((aMax / aMin) * 10) / 10 : null;
+    }
+
     return {
       baseCount,
       afterCount,
-      classDistData: [
-        { name: 'Class A', before: 70, after: 70 },
-        { name: 'Class B', before: 30, after: classAfterB },
-      ],
+      classDistData,
+      stackedData,
+      irBefore,
+      irAfter,
       qualityData: [
         { name: '결측치', before: missingBefore, after: 0 },
         { name: '이상치(%)', before: outlierBefore, after: outlierAfter },
       ],
     };
-  }, [dataProfile, preprocConfig]);
+  }, [dataProfile, preprocConfig, fileClassCounts]);
 
   const preprocAfterSample = useMemo(() => {
     if (!dataPreview) return null;
@@ -362,11 +580,182 @@ const App: React.FC = () => {
     return { headers: dataPreview.headers, rows: afterRows, labelMap };
   }, [dataPreview, preprocConfig.missingStrategy]);
 
+  /** 컬럼 탐색: 선택된 컬럼의 값 분포를 계산 (시계열 감지·분류 여부 반영) */
+  const columnAnalysisData = useMemo(() => {
+    if (!dataPreview || !analysisColumn) return null;
+    const colIdx = dataPreview.headers.indexOf(analysisColumn);
+    const targetIdx = dataPreview.headers.length - 1;
+    if (colIdx < 0) return null;
+
+    // 시계열 컬럼 탐지: 타겟 제외 헤더 중 첫 번째 시계열 컬럼 인덱스
+    const timeColIdx = dataPreview.headers.slice(0, targetIdx).findIndex((h, i) =>
+      isTimeSeriesColumn(h, dataPreview.rows.map((r) => r[i]))
+    );
+    const selectedIsTimeSeries = isTimeSeriesColumn(
+      analysisColumn,
+      dataPreview.rows.map((r) => r[colIdx])
+    );
+    const hasExternalTimeAxis = timeColIdx >= 0 && timeColIdx !== colIdx;
+    const timeColName = hasExternalTimeAxis ? dataPreview.headers[timeColIdx] : null;
+
+    // 사용자가 선택한 X축 컬럼 (없으면 자동: 시계열 컬럼 or 인덱스)
+    const customXColIdx = xColumn && xColumn !== analysisColumn
+      ? dataPreview.headers.indexOf(xColumn) : -1;
+    const effectiveXColIdx = customXColIdx >= 0 ? customXColIdx
+      : hasExternalTimeAxis ? timeColIdx : -1;
+    const effectiveXColName = customXColIdx >= 0 ? xColumn : timeColName;
+
+    // 분류 문제일 때만 클래스 그룹화
+    const allClasses = isClassificationTask
+      ? Array.from(new Set(dataPreview.rows.map((r) => r[targetIdx]).filter((v) => v !== '')))
+      : [];
+    const activeClasses = analysisClassFilter.length > 0 ? analysisClassFilter : allClasses;
+    const filteredRows = isClassificationTask && activeClasses.length > 0
+      ? dataPreview.rows.filter((r) => activeClasses.includes(r[targetIdx]) || r[targetIdx] === '')
+      : dataPreview.rows;
+
+    const colValues = filteredRows.map((r) => r[colIdx]);
+    const isNumeric = !selectedIsTimeSeries &&
+      colValues.filter((v) => v !== '').every((v) => !Number.isNaN(Number(v)));
+
+    // X축이 수치형인지 여부 (산점도에서 실제 수치값으로 사용 가능)
+    const isXNumeric = customXColIdx >= 0
+      ? filteredRows.map((r) => r[customXColIdx]).filter((v) => v !== '').every((v) => !Number.isNaN(Number(v)))
+      : false;
+
+    // x축에 시간값 or 사용자 지정 컬럼이 있으면 라인 차트
+    const useLineChart = (isNumeric || selectedIsTimeSeries) && (effectiveXColIdx >= 0 || selectedIsTimeSeries);
+
+    // x축 레이블 결정
+    const xLabel = (row: string[], i: number) =>
+      effectiveXColIdx >= 0 ? (row[effectiveXColIdx] || `#${i + 1}`) : `#${i + 1}`;
+
+    // X축으로 선택 가능한 컬럼 목록 (타겟·Y축 제외)
+    const availableXCols = dataPreview.headers.slice(0, targetIdx).filter((h) => h !== analysisColumn);
+
+    // 다중 컬럼 오버레이: 라인 차트 + 수치형 컬럼일 때만 활성화
+    const validExtraCols = useLineChart && isNumeric
+      ? extraColumns.filter((c) => {
+          if (c === analysisColumn) return false;
+          if (c === xColumn) return false;  // X축 컬럼 제외
+          const idx = dataPreview.headers.indexOf(c);
+          if (idx < 0 || idx >= targetIdx) return false;
+          if (isTimeSeriesColumn(c, dataPreview.rows.map((r) => r[idx]))) return false;
+          const vals = dataPreview.rows.map((r) => r[idx]).filter((v) => v !== '');
+          return vals.length > 0 && vals.every((v) => !Number.isNaN(Number(v)));
+        })
+      : [];
+    const isMultiCol = validExtraCols.length > 0;
+    const allSelectedCols = isMultiCol ? [analysisColumn, ...validExtraCols] : [];
+
+    // 추가 가능한 수치형 컬럼 목록 (UI 피커용)
+    const availableExtraCols = useLineChart && isNumeric
+      ? dataPreview.headers.slice(0, targetIdx).filter((h) => {
+          if (h === analysisColumn) return false;
+          if (h === xColumn) return false;  // X축 컬럼 제외
+          const hIdx = dataPreview.headers.indexOf(h);
+          if (isTimeSeriesColumn(h, dataPreview.rows.map((r) => r[hIdx]))) return false;
+          const vals = dataPreview.rows.map((r) => r[hIdx]).filter((v) => v !== '');
+          return vals.length > 0 && vals.every((v) => !Number.isNaN(Number(v)));
+        })
+      : [];
+
+    let chartData: Record<string, string | number | null>[];
+
+    if (selectedIsTimeSeries) {
+      // 시간 컬럼 자체를 선택한 경우: 안내용 표시
+      chartData = [];
+    } else if (isMultiCol) {
+      // 다중 컬럼 라인 차트: 각 행 = x 포인트, 각 컬럼 = 별도 라인
+      chartData = filteredRows.map((row, i) => {
+        const entry: Record<string, string | number | null> = { name: xLabel(row, i) };
+        allSelectedCols.forEach((col) => {
+          const idx = dataPreview.headers.indexOf(col);
+          entry[col] = idx >= 0 && row[idx] !== '' ? Number(row[idx]) : null;
+        });
+        return entry;
+      });
+    } else if (isNumeric) {
+      if (isClassificationTask && allClasses.length > 0) {
+        // 시계열+분류: 클래스별 라인 (x=시간, 각 라인=클래스)
+        chartData = filteredRows.map((r, i) => {
+          const entry: Record<string, string | number | null> = {
+            name: xLabel(r, i),
+            _xVal: isXNumeric ? (r[customXColIdx] === '' ? null : Number(r[customXColIdx])) : i,
+          };
+          const cls = r[targetIdx] || '(없음)';
+          entry[cls] = r[colIdx] === '' ? null : Number(r[colIdx]);
+          return entry;
+        });
+      } else {
+        // 수치형 단일 라인 or 바
+        chartData = filteredRows.map((r, i) => ({
+          name: xLabel(r, i),
+          value: r[colIdx] === '' ? null : Number(r[colIdx]),
+          _xVal: isXNumeric ? (r[customXColIdx] === '' ? null : Number(r[customXColIdx])) : i,
+        }));
+      }
+    } else {
+      // 범주형: 고유값 빈도
+      if (isClassificationTask && allClasses.length > 0) {
+        const counts: Record<string, Record<string, number>> = {};
+        filteredRows.forEach((r) => {
+          const val = r[colIdx] || '(빈값)';
+          const label = val.length > 10 ? val.slice(0, 10) + '…' : val;
+          const cls = r[targetIdx] || '(없음)';
+          if (!counts[label]) counts[label] = {};
+          counts[label][cls] = (counts[label][cls] ?? 0) + 1;
+        });
+        chartData = Object.entries(counts).map(([val, cc]) => ({ name: val, ...cc }));
+      } else {
+        const counts: Record<string, number> = {};
+        filteredRows.forEach((r) => {
+          const val = r[colIdx] || '(빈값)';
+          const label = val.length > 10 ? val.slice(0, 10) + '…' : val;
+          counts[label] = (counts[label] ?? 0) + 1;
+        });
+        chartData = Object.entries(counts).map(([name, count]) => ({ name, count }));
+      }
+    }
+
+    return {
+      chartData,
+      allClasses,
+      activeClasses,
+      isNumeric,
+      useLineChart,
+      selectedIsTimeSeries,
+      timeColName,
+      allSelectedCols,
+      availableExtraCols,
+      effectiveXColName,
+      isXNumeric,
+      availableXCols,
+    };
+  }, [dataPreview, analysisColumn, analysisClassFilter, isClassificationTask, extraColumns, xColumn]);
+
+
   /** 향상된 온톨로지 템플릿 추천: 산업 컨텍스트 + 데이터 타입 패턴 + ISA-95 경고 + 커버리지 포함 */
   const { recommendations: uploadTemplateRecommendations, isa95Warning: uploadIsa95Warning } = useMemo(() => {
     if (!dataPreview) return { recommendations: [], isa95Warning: null };
     return getEnhancedTemplateRecommendations(dataPreview.headers, dataPreview.rows, REFERENCE_TEMPLATES, industry, 3);
   }, [dataPreview, industry]);
+
+  // 템플릿 선택 변경 시, 전처리 설정을 자동 반영합니다.
+  useEffect(() => {
+    if (!selectedTemplate) return;
+    setPreprocConfig((prev) => applyTemplateToPreprocConfig(selectedTemplate, prev));
+    setPreprocCompleted(false);
+  }, [selectedTemplate]);
+
+  // 선택 템플릿의 시각화 기법에 따라, 전처리 화면의 시뮬레이션 차트 표시를 제한합니다.
+  const templateWantsClassDist = !selectedTemplate
+    ? true
+    : (selectedTemplate.visualizationMethods ?? []).some((v) => v.includes('클래스 분포') || v.includes('혼동 행렬'));
+
+  const templateWantsQuality = !selectedTemplate
+    ? true
+    : (selectedTemplate.visualizationMethods ?? []).some((v) => v.includes('히트맵') || v.includes('상관관계') || v.includes('상관'));
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50">
@@ -619,8 +1008,21 @@ const App: React.FC = () => {
                         const coveragePct = Math.round(coverageScore * 100);
                         const coverageBarCls = coveragePct >= 75 ? 'bg-emerald-400' : coveragePct >= 50 ? 'bg-amber-400' : 'bg-rose-400';
                         const coverageTextCls = coveragePct >= 75 ? 'text-emerald-600' : coveragePct >= 50 ? 'text-amber-600' : 'text-rose-600';
+                        const isSelected = selectedTemplate?.id === template.id;
                         return (
-                          <div key={template.id} className="px-5 py-5 flex flex-col gap-3 hover:bg-slate-50 transition-colors">
+                          <div
+                            key={template.id}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => setSelectedTemplate(template)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') setSelectedTemplate(template);
+                            }}
+                            className={`px-5 py-5 flex flex-col gap-3 transition-colors cursor-pointer ${
+                              isSelected ? 'bg-indigo-50 border border-indigo-200' : 'hover:bg-slate-50 border border-transparent'
+                            }`}
+                            aria-label={`${template.name} 템플릿 선택`}
+                          >
                             {/* 순위 + 적합도 게이지 */}
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2 min-w-0">
@@ -640,6 +1042,11 @@ const App: React.FC = () => {
                                 <span className={`text-[10px] font-semibold ${suitabilityTextCls}`}>{suitabilityLabel}</span>
                               </div>
                             </div>
+                            {isSelected && (
+                              <div className="text-[10px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-full px-2.5 py-0.5 self-start">
+                                선택됨 (전처리 적용)
+                              </div>
+                            )}
 
                             {/* 관련 MES 기능 뱃지 */}
                             <div className="flex flex-wrap gap-1">
@@ -743,6 +1150,22 @@ const App: React.FC = () => {
                   );
                 })()}
 
+                {selectedTemplate && (
+                  <div className="px-5 py-3 bg-indigo-50/30 border-t border-indigo-100 flex items-center justify-between gap-3">
+                    <p className="text-[11px] text-indigo-700 font-semibold">
+                      선택 템플릿: {selectedTemplate.name} (전처리 &amp; 증강 화면에 즉시 반영됨)
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setCurrentNav('preprocess')}
+                      className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 shrink-0 shadow-sm"
+                    >
+                      <SlidersHorizontal className="w-3.5 h-3.5" />
+                      전처리 &amp; 증강으로 이동 →
+                    </button>
+                  </div>
+                )}
+
                 <div className="px-5 py-3 bg-slate-50 border-t border-slate-100">
                   <p className="text-[10px] text-slate-400">
                     전체 분석 템플릿 목록은 <button type="button" onClick={() => setCurrentNav('ontology')} className="text-indigo-600 font-semibold hover:underline">Standard MES Ontology</button> 탭에서 확인하세요.
@@ -789,6 +1212,59 @@ const App: React.FC = () => {
               <SlidersHorizontal className="w-5 h-5 text-indigo-600" />
               전처리 &amp; 증강
             </h1>
+
+            {selectedTemplate ? (
+              <section className="mb-4 bg-white rounded-xl border border-indigo-100 shadow-sm p-4">
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <div>
+                    <p className="text-xs font-bold text-indigo-700">선택 템플릿 기반 전처리/시각화</p>
+                    <p className="text-[11px] text-slate-500 mt-1">{selectedTemplate.name}</p>
+                  </div>
+                  <span className="text-[10px] text-indigo-600 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-full font-semibold">
+                    적용됨
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-[10px] font-semibold text-slate-500 mb-2">전처리 기법</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(selectedTemplate.preprocessingMethods ?? []).slice(0, 8).map((m) => (
+                        <span key={m} className="text-[10px] bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded border border-slate-200">
+                          {m}
+                        </span>
+                      ))}
+                      {(selectedTemplate.preprocessingMethods?.length ?? 0) > 8 && (
+                        <span className="text-[10px] text-slate-400">
+                          +{selectedTemplate.preprocessingMethods!.length - 8}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-semibold text-slate-500 mb-2">시각화 기법</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(selectedTemplate.visualizationMethods ?? []).slice(0, 8).map((v) => (
+                        <span key={v} className="text-[10px] bg-indigo-50 text-indigo-600 border border-indigo-100 px-1.5 py-0.5 rounded">
+                          {v}
+                        </span>
+                      ))}
+                      {(selectedTemplate.visualizationMethods?.length ?? 0) > 8 && (
+                        <span className="text-[10px] text-slate-400">
+                          +{selectedTemplate.visualizationMethods!.length - 8}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </section>
+            ) : (
+              <section className="mb-4 bg-white rounded-xl border border-slate-200 shadow-sm p-4">
+                <p className="text-xs font-bold text-slate-700 mb-1">선택된 템플릿이 없습니다</p>
+                <p className="text-[11px] text-slate-500">
+                  `데이터 준비` 탭에서 MES 분석 템플릿을 선택하면, 여기의 전처리 설정/기법 표시가 자동으로 갱신됩니다.
+                </p>
+              </section>
+            )}
 
             {/* ── 1. 전처리 설정 컨트롤 바 ── */}
             <section className="mb-4 bg-white rounded-xl border border-slate-200 shadow-sm">
@@ -840,14 +1316,6 @@ const App: React.FC = () => {
                   <span className="text-xs text-slate-600 font-medium">SMOTE</span>
                 </label>
                 <div className="ml-auto flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => { setPreprocCompleted(true); setCurrentNav('run'); }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
-                  >
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    전처리 완료 → 분석 실행
-                  </button>
                   <button
                     type="button"
                     onClick={() => setPreprocSettingsExpanded((v) => !v)}
@@ -958,72 +1426,519 @@ const App: React.FC = () => {
             </section>
 
             {/* ── 2. Before / After 차트 ── */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-3">
-              <section className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                <p className="text-xs font-bold text-slate-700 mb-1 flex items-center gap-1.5">
-                  <BarChart3 className="w-3.5 h-3.5 text-indigo-500" />클래스 분포
-                </p>
-                <p className="text-[10px] text-slate-400 mb-3">설정 변경 시 즉시 반영 · 시뮬레이션 기반</p>
-                <ResponsiveContainer width="100%" height={150}>
-                  <BarChart data={preprocChartData.classDistData} barCategoryGap="35%" barGap={3}>
-                    <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={28} />
-                    <Tooltip
-                      contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
-                      formatter={(v: number, name: string) => [`${v}건`, name === 'before' ? '전처리 전' : '전처리 후']}
-                    />
-                    <Bar dataKey="before" name="before" fill="#cbd5e1" radius={[3, 3, 0, 0]} />
-                    <Bar dataKey="after" name="after" fill="#6366f1" radius={[3, 3, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-                <div className="flex items-center gap-3 mt-1 justify-center">
-                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-slate-300 inline-block" /><span className="text-[10px] text-slate-500">전처리 전</span></span>
-                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-indigo-500 inline-block" /><span className="text-[10px] text-slate-500">전처리 후</span></span>
-                </div>
-              </section>
-              <section className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                <p className="text-xs font-bold text-slate-700 mb-1 flex items-center gap-1.5">
-                  <BarChart3 className="w-3.5 h-3.5 text-emerald-500" />데이터 품질 지표
-                </p>
-                <p className="text-[10px] text-slate-400 mb-3">결측치·이상치 처리 효과</p>
-                <ResponsiveContainer width="100%" height={150}>
-                  <BarChart data={preprocChartData.qualityData} barCategoryGap="35%" barGap={3}>
-                    <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
-                    <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={28} />
-                    <Tooltip
-                      contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
-                      formatter={(v: number, name: string) => [v, name === 'before' ? '전처리 전' : '전처리 후']}
-                    />
-                    <Bar dataKey="before" name="before" fill="#fca5a5" radius={[3, 3, 0, 0]} />
-                    <Bar dataKey="after" name="after" fill="#86efac" radius={[3, 3, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-                <div className="flex items-center gap-3 mt-1 justify-center">
-                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-red-300 inline-block" /><span className="text-[10px] text-slate-500">전처리 전</span></span>
-                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-green-300 inline-block" /><span className="text-[10px] text-slate-500">전처리 후</span></span>
-                </div>
-              </section>
-            </div>
+            {!uploadedProcessFile ? (
+              <div className="mb-4 p-6 bg-slate-50 rounded-xl border border-dashed border-slate-200 text-center">
+                <BarChart3 className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                <p className="text-xs font-semibold text-slate-500">데이터를 업로드하면 시각화 지표가 표시됩니다</p>
+                <p className="text-[11px] text-slate-400 mt-1">클래스 분포, 데이터 품질, 피처 통계 등을 확인할 수 있습니다.</p>
+                <button
+                  type="button"
+                  onClick={() => setCurrentNav('data')}
+                  className="mt-3 text-xs font-semibold text-indigo-600 hover:text-indigo-700"
+                >
+                  데이터 준비 탭으로 이동 →
+                </button>
+              </div>
+            ) : (
+              <>
+                {/* ── 인터랙티브 컬럼 탐색 ── */}
+                <section className="bg-white rounded-xl border border-slate-200 shadow-sm mb-4 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <Search className="w-3.5 h-3.5 text-indigo-500" />
+                      <span className="text-xs font-bold text-slate-700">컬럼 탐색</span>
+                      <span className="text-[10px] text-slate-400 hidden sm:inline">· 컬럼별 값 분포를 클래스 기준으로 확인</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {/* 시계열 컬럼 배지 */}
+                      {columnAnalysisData?.selectedIsTimeSeries && (
+                        <span className="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-sky-50 text-sky-600 border border-sky-200">
+                          시계열
+                        </span>
+                      )}
+                      {columnAnalysisData?.isNumeric && !columnAnalysisData.selectedIsTimeSeries && (() => {
+                        const effectiveType = chartTypeOverride ?? (columnAnalysisData.useLineChart ? 'line' : 'bar');
+                        return (
+                          <div className="flex items-center gap-0.5 bg-slate-100 rounded-lg p-0.5">
+                            {([['line', '선'], ['bar', '막대'], ['scatter', '산점도']] as const).map(([key, label]) => (
+                              <button
+                                key={key}
+                                type="button"
+                                onClick={() => setChartTypeOverride(key)}
+                                className={`px-2 py-0.5 text-[10px] font-semibold rounded-md transition-colors ${effectiveType === key ? 'bg-white text-slate-700 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
 
-            {/* 레코드 수 요약 */}
-            <div className="flex items-center gap-3 mb-4 bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
-              <div className="flex-1 p-2 rounded-lg bg-slate-50 border border-slate-200 text-center">
-                <p className="text-[10px] text-slate-500 mb-0.5">원본 데이터</p>
-                <p className="text-sm font-bold text-slate-800">{preprocChartData.baseCount.toLocaleString()}건</p>
-              </div>
-              <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
-              <div className={`flex-1 p-2 rounded-lg border text-center ${preprocChartData.afterCount > preprocChartData.baseCount ? 'bg-indigo-50 border-indigo-200' : 'bg-slate-50 border-slate-200'}`}>
-                <p className="text-[10px] text-slate-500 mb-0.5">전처리 후</p>
-                <p className={`text-sm font-bold ${preprocChartData.afterCount > preprocChartData.baseCount ? 'text-indigo-700' : 'text-slate-800'}`}>
-                  {preprocChartData.afterCount.toLocaleString()}건
-                </p>
-                {preprocChartData.afterCount > preprocChartData.baseCount && (
-                  <p className="text-[9px] text-indigo-500 mt-0.5">
-                    +{(preprocChartData.afterCount - preprocChartData.baseCount).toLocaleString()} (SMOTE)
-                  </p>
-                )}
-              </div>
-            </div>
+                  {/* X / Y 축 선택 */}
+                  {dataPreview.headers.length > 2 && (
+                    <div className="px-4 py-2 border-b border-slate-100 flex items-center gap-4 flex-wrap">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-slate-500 font-semibold shrink-0">Y축:</span>
+                        <select
+                          value={analysisColumn}
+                          onChange={(e) => { setAnalysisColumn(e.target.value); setAnalysisClassFilter([]); setExtraColumns([]); setChartTypeOverride(null); setXColumn(''); }}
+                          className="text-xs border border-slate-200 rounded-lg px-2 py-1 bg-slate-50 text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+                        >
+                          {dataPreview.headers.slice(0, -1).map((h) => (
+                            <option key={h} value={h}>{h}</option>
+                          ))}
+                        </select>
+                      </div>
+                      {columnAnalysisData?.isNumeric && !columnAnalysisData.selectedIsTimeSeries && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] text-slate-500 font-semibold shrink-0">X축:</span>
+                          <select
+                            value={xColumn}
+                            onChange={(e) => { setXColumn(e.target.value); setExtraColumns([]); }}
+                            className="text-xs border border-slate-200 rounded-lg px-2 py-1 bg-slate-50 text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+                          >
+                            <option value="">자동{columnAnalysisData.effectiveXColName ? ` (${columnAnalysisData.effectiveXColName})` : ' (인덱스)'}</option>
+                            {columnAnalysisData.availableXCols.map((h) => (
+                              <option key={h} value={h}>{h}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 다중 컬럼 선택 (라인 차트 모드일 때만 표시) */}
+                  {columnAnalysisData?.useLineChart && !columnAnalysisData.selectedIsTimeSeries &&
+                   columnAnalysisData.availableExtraCols.length > 0 && (() => {
+                    const allSelected = columnAnalysisData.availableExtraCols.every((c) => extraColumns.includes(c));
+                    return (
+                      <div className="px-4 py-2 border-b border-slate-100 flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] text-slate-500 font-semibold shrink-0">함께 보기:</span>
+                        {/* 전체 켜기/끄기 토글 */}
+                        <button
+                          type="button"
+                          onClick={() => setExtraColumns(allSelected ? [] : [...columnAnalysisData.availableExtraCols])}
+                          className={`px-2.5 py-0.5 text-[10px] rounded-full border font-semibold transition-colors ${allSelected ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-slate-500 border-slate-300 hover:border-slate-400'}`}
+                        >
+                          {allSelected ? '전체 해제' : '전체 선택'}
+                        </button>
+                        <span className="text-slate-200 text-xs select-none">|</span>
+                        {columnAnalysisData.availableExtraCols.map((col) => {
+                          const active = extraColumns.includes(col);
+                          const colorIdx = active ? [analysisColumn, ...extraColumns].indexOf(col) : -1;
+                          const color = active ? CHART_PALETTE[colorIdx % CHART_PALETTE.length] : undefined;
+                          return (
+                            <button
+                              key={col}
+                              type="button"
+                              onClick={() => setExtraColumns((prev) =>
+                                prev.includes(col) ? prev.filter((c) => c !== col) : [...prev, col]
+                              )}
+                              style={active ? { backgroundColor: color + '18', color, borderColor: color + '70' } : {}}
+                              className={`px-2.5 py-0.5 text-[10px] rounded-full border font-semibold transition-colors ${!active ? 'bg-white text-slate-400 border-slate-200 hover:border-slate-300' : ''}`}
+                            >
+                              {col}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
+
+                  {/* 시계열 컬럼 안내 */}
+                  {columnAnalysisData?.selectedIsTimeSeries && (
+                    <div className="mx-4 mb-3 px-3 py-2 bg-sky-50 border border-sky-200 rounded-lg text-[11px] text-sky-700">
+                      시간 컬럼입니다. 다른 수치형 컬럼을 선택하면 이 컬럼을 x축으로 사용한 라인 차트로 분석합니다.
+                      {!preprocConfig.featureEngineering.includes('timediff') && (
+                        <button
+                          type="button"
+                          onClick={() => setPreprocConfig((c) => ({ ...c, featureEngineering: [...c.featureEngineering, 'timediff'] }))}
+                          className="ml-2 font-semibold underline hover:text-sky-900"
+                        >
+                          시간 차분 피처 추가 →
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* timediff 자동 제안 (시계열 x축이 감지됐을 때) */}
+                  {columnAnalysisData?.timeColName && !columnAnalysisData.selectedIsTimeSeries &&
+                   !preprocConfig.featureEngineering.includes('timediff') && (
+                    <div className="mx-4 mb-2 px-3 py-1.5 bg-sky-50 border border-sky-200 rounded-lg flex items-center justify-between">
+                      <span className="text-[10px] text-sky-700">
+                        시계열 컬럼 <strong>{columnAnalysisData.timeColName}</strong> 감지됨 · x축으로 사용 중
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setPreprocConfig((c) => ({ ...c, featureEngineering: [...c.featureEngineering, 'timediff'] }))}
+                        className="text-[10px] font-semibold text-sky-600 hover:text-sky-800 shrink-0 ml-2"
+                      >
+                        시간 차분 추가
+                      </button>
+                    </div>
+                  )}
+
+                  {/* 클래스 필터 chips (다중 컬럼 모드에서는 숨김) */}
+                  {columnAnalysisData && columnAnalysisData.allClasses.length > 0 && columnAnalysisData.allSelectedCols.length <= 1 && (
+                    <div className="px-4 pt-2 pb-2 border-b border-slate-50 flex items-center gap-2 flex-wrap">
+                      <span className="text-[10px] text-slate-500 font-semibold shrink-0">클래스:</span>
+                      <button
+                        type="button"
+                        onClick={() => setAnalysisClassFilter([])}
+                        className={`px-2.5 py-0.5 text-[10px] rounded-full border font-semibold transition-colors ${analysisClassFilter.length === 0 ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-slate-500 border-slate-300 hover:border-slate-400'}`}
+                      >
+                        전체
+                      </button>
+                      {columnAnalysisData.allClasses.map((cls, i) => {
+                        const color = CHART_PALETTE[i % CHART_PALETTE.length];
+                        const active = analysisClassFilter.includes(cls);
+                        return (
+                          <button
+                            key={cls}
+                            type="button"
+                            onClick={() => setAnalysisClassFilter((prev) =>
+                              prev.includes(cls) ? prev.filter((c) => c !== cls) : [...prev, cls]
+                            )}
+                            style={active ? { backgroundColor: color + '18', color, borderColor: color + '70' } : {}}
+                            className={`px-2.5 py-0.5 text-[10px] rounded-full border font-semibold transition-colors ${!active ? 'bg-white text-slate-400 border-slate-200 hover:border-slate-300' : ''}`}
+                          >
+                            {cls}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <div className="px-4 pt-3 pb-2">
+                    {columnAnalysisData && !columnAnalysisData.selectedIsTimeSeries ? (
+                      <>
+                        <ResponsiveContainer width="100%" height={columnAnalysisData.allSelectedCols.length > 1 ? 220 : 190}>
+                          {(() => {
+                            const effectiveType = chartTypeOverride ?? (
+                              columnAnalysisData.allSelectedCols.length > 1 || columnAnalysisData.useLineChart ? 'line' : 'bar'
+                            );
+
+                            if (columnAnalysisData.allSelectedCols.length > 1) {
+                              /* 다중 컬럼 모드 */
+                              if (effectiveType === 'scatter') {
+                                const xAxisName = columnAnalysisData.effectiveXColName ?? '인덱스';
+                                const multiScatterAllData = columnAnalysisData.allSelectedCols.flatMap((col) =>
+                                  columnAnalysisData.chartData.map((d, idx) => ({ x: idx, label: String(d.name), col }))
+                                );
+                                const showTimeTick = !!columnAnalysisData.effectiveXColName;
+                                return (
+                                  <ScatterChart margin={{ top: 5, right: 10, bottom: 5, left: 0 }}>
+                                    <XAxis type="number" dataKey="x" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} name={xAxisName}
+                                      tickFormatter={showTimeTick
+                                        ? (val: number) => { const pt = multiScatterAllData.find((p) => p.x === Math.round(val)); return pt?.label ?? `#${Math.round(val) + 1}`; }
+                                        : undefined}
+                                    />
+                                    <YAxis type="number" dataKey="y" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={40} />
+                                    <Tooltip
+                                      cursor={{ strokeDasharray: '3 3' }}
+                                      content={({ payload }) => {
+                                        if (!payload?.length) return null;
+                                        const p = payload[0].payload as { x: number; y: number; label: string; col: string };
+                                        return (
+                                          <div style={{ fontSize: 11, padding: '6px 10px', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+                                            <p style={{ color: '#64748b', marginBottom: 2 }}>{xAxisName}: {columnAnalysisData.effectiveXColName ? p.label : `#${p.x + 1}`}</p>
+                                            <p><strong>{p.col}</strong>: {p.y}</p>
+                                          </div>
+                                        );
+                                      }}
+                                    />
+                                    <Legend wrapperStyle={{ fontSize: 10 }} />
+                                    {columnAnalysisData.allSelectedCols.map((col, i) => (
+                                      <Scatter key={col} name={col}
+                                        data={columnAnalysisData.chartData.map((d, idx) => ({ x: idx, y: typeof d[col] === 'number' ? d[col] : null, label: String(d.name), col })).filter((p) => p.y !== null) as { x: number; y: number; label: string; col: string }[]}
+                                        fill={CHART_PALETTE[i % CHART_PALETTE.length]} />
+                                    ))}
+                                  </ScatterChart>
+                                );
+                              } else if (effectiveType === 'bar') {
+                                return (
+                                  <BarChart data={columnAnalysisData.chartData} barCategoryGap="30%" barGap={2}>
+                                    <XAxis dataKey="name" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                                    <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={40} />
+                                    <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }} formatter={(v: number | null, name: string) => [v ?? '(결측)', name]} />
+                                    <Legend wrapperStyle={{ fontSize: 10 }} />
+                                    {columnAnalysisData.allSelectedCols.map((col, i) => (
+                                      <Bar key={col} dataKey={col} fill={CHART_PALETTE[i % CHART_PALETTE.length]} radius={[3, 3, 0, 0]} />
+                                    ))}
+                                  </BarChart>
+                                );
+                              } else {
+                                /* 다중 컬럼 라인 차트 (default) */
+                                return (
+                                  <LineChart data={columnAnalysisData.chartData}>
+                                    <XAxis dataKey="name" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                                    <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={40} />
+                                    <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }} formatter={(v: number | null, name: string) => [v ?? '(결측)', name]} />
+                                    <Legend wrapperStyle={{ fontSize: 10 }} />
+                                    {columnAnalysisData.allSelectedCols.map((col, i) => (
+                                      <Line key={col} type="monotone" dataKey={col}
+                                        stroke={CHART_PALETTE[i % CHART_PALETTE.length]}
+                                        strokeWidth={2} dot={false} connectNulls activeDot={{ r: 5 }} />
+                                    ))}
+                                  </LineChart>
+                                );
+                              }
+                            } else if (columnAnalysisData.isNumeric) {
+                              /* 단일 수치형 컬럼 */
+                              if (effectiveType === 'scatter') {
+                                const scatterData = columnAnalysisData.chartData
+                                  .map((d, i) => ({
+                                    x: columnAnalysisData.isXNumeric
+                                      ? (typeof d._xVal === 'number' ? d._xVal : null)
+                                      : i,
+                                    y: typeof d.value === 'number' ? d.value : null,
+                                    label: String(d.name),
+                                  }))
+                                  .filter((p): p is { x: number; y: number; label: string } => p.x !== null && p.y !== null);
+                                const xAxisName = columnAnalysisData.effectiveXColName ?? '인덱스';
+                                const showTimeTick = !!columnAnalysisData.effectiveXColName && !columnAnalysisData.isXNumeric;
+                                return (
+                                  <ScatterChart margin={{ top: 5, right: 10, bottom: 5, left: 0 }}>
+                                    <XAxis
+                                      type="number" dataKey="x" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} name={xAxisName}
+                                      tickFormatter={showTimeTick
+                                        ? (val: number) => { const pt = scatterData.find((p) => p.x === Math.round(val)); return pt?.label ?? `#${Math.round(val) + 1}`; }
+                                        : undefined}
+                                    />
+                                    <YAxis type="number" dataKey="y" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={36} />
+                                    <Tooltip
+                                      cursor={{ strokeDasharray: '3 3' }}
+                                      content={({ payload }) => {
+                                        if (!payload?.length) return null;
+                                        const p = payload[0].payload as { x: number; y: number; label: string };
+                                        const xDisplay = columnAnalysisData.isXNumeric ? p.x : (columnAnalysisData.effectiveXColName ? p.label : `#${p.x + 1}`);
+                                        return (
+                                          <div style={{ fontSize: 11, padding: '6px 10px', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+                                            <p style={{ color: '#64748b', marginBottom: 2 }}>{xAxisName}: {xDisplay}</p>
+                                            <p><strong>{analysisColumn}</strong>: {p.y}</p>
+                                          </div>
+                                        );
+                                      }}
+                                    />
+                                    <Scatter data={scatterData} fill={CHART_PALETTE[0]} />
+                                  </ScatterChart>
+                                );
+                              } else if (effectiveType === 'line') {
+                                return (
+                                  <LineChart data={columnAnalysisData.chartData}>
+                                    <XAxis dataKey="name" tick={{ fontSize: 9 }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                                    <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={36} />
+                                    <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }} formatter={(v: number | null, name: string) => [v ?? '(결측)', name === 'value' ? analysisColumn : name]} />
+                                    {columnAnalysisData.allClasses.length > 0 ? (
+                                      <>
+                                        <Legend wrapperStyle={{ fontSize: 10 }} />
+                                        {columnAnalysisData.allClasses
+                                          .filter((c) => analysisClassFilter.length === 0 || analysisClassFilter.includes(c))
+                                          .map((cls, i) => (
+                                            <Line key={cls} type="monotone" dataKey={cls} stroke={CHART_PALETTE[i % CHART_PALETTE.length]}
+                                              strokeWidth={2} dot={{ r: 4, strokeWidth: 2, fill: '#fff', stroke: CHART_PALETTE[i % CHART_PALETTE.length] }}
+                                              connectNulls activeDot={{ r: 6 }} />
+                                          ))}
+                                      </>
+                                    ) : (
+                                      <Line type="monotone" dataKey="value" stroke={CHART_PALETTE[0]} strokeWidth={2}
+                                        dot={{ r: 4, strokeWidth: 2, fill: '#fff', stroke: CHART_PALETTE[0] }} connectNulls activeDot={{ r: 6 }} />
+                                    )}
+                                  </LineChart>
+                                );
+                              } else {
+                                /* 막대 차트 */
+                                return (
+                                  <BarChart data={columnAnalysisData.chartData} barCategoryGap="30%">
+                                    <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                                    <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={36} />
+                                    <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }} formatter={(v: number) => [v, analysisColumn]} />
+                                    <Bar dataKey="value" fill={CHART_PALETTE[0]} radius={[3, 3, 0, 0]} />
+                                  </BarChart>
+                                );
+                              }
+                            } else if (columnAnalysisData.allClasses.length > 0) {
+                              /* 범주형 + 분류: grouped bar */
+                              return (
+                                <BarChart data={columnAnalysisData.chartData} barCategoryGap="30%" barGap={2}>
+                                  <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                                  <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={24} />
+                                  <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }} formatter={(v: number, name: string) => [`${v}건`, name]} />
+                                  <Legend wrapperStyle={{ fontSize: 10 }} />
+                                  {columnAnalysisData.allClasses
+                                    .filter((c) => analysisClassFilter.length === 0 || analysisClassFilter.includes(c))
+                                    .map((cls, i) => (
+                                      <Bar key={cls} dataKey={cls} fill={CHART_PALETTE[i % CHART_PALETTE.length]} radius={[3, 3, 0, 0]} />
+                                    ))}
+                                </BarChart>
+                              );
+                            } else {
+                              /* 범주형 + 회귀: 단일 bar */
+                              return (
+                                <BarChart data={columnAnalysisData.chartData} barCategoryGap="35%">
+                                  <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                                  <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={24} />
+                                  <Tooltip contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }} formatter={(v: number) => [`${v}건`, '빈도']} />
+                                  <Bar dataKey="count" fill={CHART_PALETTE[0]} radius={[3, 3, 0, 0]} />
+                                </BarChart>
+                              );
+                            }
+                          })()}
+                        </ResponsiveContainer>
+                        <p className="text-[9px] text-slate-400 mt-1.5">샘플 5행 기반 · 실제 전체 데이터 분포와 차이가 있을 수 있음</p>
+                      </>
+                    ) : (
+                      <div className="h-[190px] flex items-center justify-center text-[11px] text-slate-400">
+                        {columnAnalysisData?.selectedIsTimeSeries
+                          ? '다른 수치형 컬럼을 선택하세요'
+                          : '컬럼을 선택하세요'}
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                {/* ── 품질 지표 & 증강 전/후 비교 ── */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+                  {/* 데이터 품질 지표 */}
+                  <section className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    <p className="text-xs font-bold text-slate-700 mb-1 flex items-center gap-1.5">
+                      <BarChart3 className="w-3.5 h-3.5 text-emerald-500" />
+                      데이터 품질 지표
+                      {selectedTemplate && (
+                        <span className={`ml-2 text-[10px] font-semibold px-2 py-0.5 rounded-full border ${templateWantsQuality ? 'text-emerald-700 bg-emerald-50 border-emerald-100' : 'text-slate-500 bg-slate-50 border-slate-200'}`}>
+                          {templateWantsQuality ? '템플릿 포함' : '템플릿 미포함'}
+                        </span>
+                      )}
+                    </p>
+                    <p className="text-[10px] text-slate-400 mb-3">결측치·이상치 처리 효과 (전처리 전 → 후)</p>
+                    <ResponsiveContainer width="100%" height={160}>
+                      <BarChart data={preprocChartData.qualityData} barCategoryGap="35%" barGap={3}>
+                        <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={28} />
+                        <Tooltip
+                          contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
+                          formatter={(v: number, name: string) => [v, name === 'before' ? '전처리 전' : '전처리 후']}
+                        />
+                        <Bar dataKey="before" name="before" fill="#fca5a5" radius={[3, 3, 0, 0]} />
+                        <Bar dataKey="after" name="after" fill="#86efac" radius={[3, 3, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                    <div className="flex items-center gap-3 mt-1 justify-center">
+                      <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-red-300 inline-block" /><span className="text-[10px] text-slate-500">전처리 전</span></span>
+                      <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-green-300 inline-block" /><span className="text-[10px] text-slate-500">전처리 후</span></span>
+                    </div>
+                  </section>
+
+                  {/* 데이터 증강 전/후 비교 (Stacked Bar) */}
+                  <section className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                    <div className="flex items-start justify-between mb-1 gap-2 flex-wrap">
+                      <p className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                        <Shuffle className="w-3.5 h-3.5 text-indigo-500" />
+                        데이터 증강 전/후
+                      </p>
+                      {preprocChartData.irBefore !== null && (
+                        <div className="flex items-center gap-2 text-[10px]">
+                          <span className="text-slate-400">불균형 비율</span>
+                          <span className="font-semibold text-red-500">{preprocChartData.irBefore}x</span>
+                          {preprocConfig.smoteEnabled && preprocChartData.irAfter !== null && (
+                            <>
+                              <span className="text-slate-300">→</span>
+                              <span className={`font-semibold ${preprocChartData.irAfter <= 1.2 ? 'text-emerald-600' : 'text-amber-500'}`}>
+                                {preprocChartData.irAfter}x
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {preprocChartData.stackedData && preprocChartData.stackedData.length > 0 ? (
+                      <>
+                        <p className="text-[10px] text-slate-400 mb-2">
+                          {preprocConfig.smoteEnabled
+                            ? '클래스별 원본(진한색) + SMOTE 합성(연한색) 레코드 수'
+                            : '현재 클래스 분포 · SMOTE 활성화 시 합성 레이어가 추가됩니다'}
+                        </p>
+                        <ResponsiveContainer width="100%" height={148}>
+                          <BarChart data={preprocChartData.stackedData} barCategoryGap="32%">
+                            <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
+                            <YAxis tick={{ fontSize: 10 }} axisLine={false} tickLine={false} width={42}
+                              tickFormatter={(v: number) => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : String(v)} />
+                            <Tooltip
+                              contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
+                              formatter={(v: number, name: string) => [
+                                `${v.toLocaleString()}건`,
+                                name === '원본' ? '원본 데이터' : 'SMOTE 합성',
+                              ]}
+                            />
+                            <Legend wrapperStyle={{ fontSize: 10 }}
+                              formatter={(v: string) => v === '원본' ? '원본 데이터' : 'SMOTE 합성'} />
+                            {/* 원본 레이어 */}
+                            <Bar dataKey="원본" stackId="s"
+                              radius={preprocConfig.smoteEnabled ? [0, 0, 3, 3] : [3, 3, 3, 3]}>
+                              {preprocChartData.stackedData.map((d, i) => (
+                                <Cell key={d.name}
+                                  fill={preprocConfig.smoteEnabled
+                                    ? CHART_PALETTE[i % CHART_PALETTE.length]
+                                    : '#94a3b8'} />
+                              ))}
+                            </Bar>
+                            {/* 합성 레이어 (SMOTE 활성 시만) */}
+                            {preprocConfig.smoteEnabled && (
+                              <Bar dataKey="합성" stackId="s" radius={[3, 3, 0, 0]}>
+                                {preprocChartData.stackedData.map((d, i) => (
+                                  <Cell key={d.name}
+                                    fill={CHART_PALETTE[i % CHART_PALETTE.length] + '55'} />
+                                ))}
+                              </Bar>
+                            )}
+                          </BarChart>
+                        </ResponsiveContainer>
+                        {!preprocConfig.smoteEnabled && (
+                          <div className="mt-2 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => setPreprocConfig((c) => ({ ...c, smoteEnabled: true }))}
+                              className="px-2.5 py-1 text-[10px] font-semibold rounded-lg bg-indigo-50 text-indigo-600 border border-indigo-200 hover:bg-indigo-100"
+                            >
+                              SMOTE 활성화 →
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center h-[168px] text-center gap-1.5">
+                        <Shuffle className="w-7 h-7 text-slate-200" />
+                        <p className="text-[11px] font-semibold text-slate-400 mt-1">분류 데이터가 아닙니다</p>
+                        <p className="text-[10px] text-slate-400">타겟 컬럼에 클래스가 감지되지 않아 증강 비교를 표시할 수 없습니다.</p>
+                      </div>
+                    )}
+                  </section>
+                </div>
+
+                {/* 레코드 수 요약 */}
+                <div className="flex items-center gap-3 mb-4 bg-white p-3 rounded-xl border border-slate-200 shadow-sm">
+                  <div className="flex-1 p-2 rounded-lg bg-slate-50 border border-slate-200 text-center">
+                    <p className="text-[10px] text-slate-500 mb-0.5">원본 데이터</p>
+                    <p className="text-sm font-bold text-slate-800">{preprocChartData.baseCount.toLocaleString()}건</p>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
+                  <div className={`flex-1 p-2 rounded-lg border text-center ${preprocChartData.afterCount > preprocChartData.baseCount ? 'bg-indigo-50 border-indigo-200' : 'bg-slate-50 border-slate-200'}`}>
+                    <p className="text-[10px] text-slate-500 mb-0.5">전처리 후</p>
+                    <p className={`text-sm font-bold ${preprocChartData.afterCount > preprocChartData.baseCount ? 'text-indigo-700' : 'text-slate-800'}`}>
+                      {preprocChartData.afterCount.toLocaleString()}건
+                    </p>
+                    {preprocChartData.afterCount > preprocChartData.baseCount && (
+                      <p className="text-[9px] text-indigo-500 mt-0.5">
+                        +{(preprocChartData.afterCount - preprocChartData.baseCount).toLocaleString()} (SMOTE)
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </>
+            )}
 
             {/* ── 3. Before / After 데이터 샘플 ── */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
@@ -1209,7 +2124,7 @@ const App: React.FC = () => {
 
             {/* 전처리 설정 완료 요약 */}
             {preprocCompleted && (
-              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-start gap-3">
+              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-start gap-3 mb-4">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                 <div className="space-y-1 text-[10px] text-emerald-700 min-w-0">
                   <p className="text-xs font-bold text-emerald-700 mb-1">전처리 설정 완료</p>
@@ -1225,6 +2140,19 @@ const App: React.FC = () => {
                 </div>
               </div>
             )}
+
+            {/* ── 전처리 완료 → 분석 실행 CTA ── */}
+            <div className="mt-2 mb-2">
+              <button
+                type="button"
+                onClick={() => { setPreprocCompleted(true); setCurrentNav('run'); }}
+                className="w-full flex items-center justify-center gap-2 px-6 py-3.5 text-sm font-bold rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 shadow-md hover:shadow-lg transition-all"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                전처리 완료 → 분석 실행
+              </button>
+              <p className="text-center text-[10px] text-slate-400 mt-1.5">설정을 확인한 후 분석 실행 탭으로 이동합니다</p>
+            </div>
           </div>
         )}
 
