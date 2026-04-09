@@ -49,6 +49,7 @@ import DashboardHeader from './components/DashboardHeader';
 import AppSidebar, { type NavId } from './components/AppSidebar';
 import OntologyVisualizer from './components/OntologyVisualizer';
 import OntologyGraph from './components/OntologyGraph';
+import OntologyNodeDetailPanel from './components/OntologyNodeDetailPanel';
 import { OntologyGraphHelpTip } from './components/OntologyGraphHelpTip';
 import {
   AugmentationSuggestionItem,
@@ -128,21 +129,6 @@ function buildDataUsageSummary(profile: DataProfile | null, industry: IndustryTy
   return `업로드·분석 데이터 ${profile.recordsCount.toLocaleString()}건, ${profile.features.length}개 피처(${featList}) 기준. ${industry} 도메인 반영, 학습/검증 분할 및 전처리 적용.`;
 }
 
-/** 분석 구조 맵 클릭 시, 선택 노드의 의미를 한 줄로 안내합니다. */
-function describeOntologyNode(node: OntologySelectedNode): string {
-  if (node.type === 'root') {
-    return 'L0 루트입니다. 표준 MES 온톨로지의 전체 출발점으로, 모든 도메인·기능이 여기에서 파생됩니다.';
-  }
-  if (node.type === 'domain') {
-    return `L1 도메인 「${node.data.label}」입니다. 관련 기능(L2)을 묶는 상위 분류이며, 아래 기능 노드와 연결됩니다.`;
-  }
-  if (node.type === 'function') {
-    const fn = node.data.fn;
-    return `L2 기능 「${fn.nameKo ?? fn.name}(${fn.id})」입니다. ${fn.descriptionKo ?? fn.description}`;
-  }
-  return `L3 템플릿 「${node.data.template.name}」입니다. 연결된 L2 기능을 중심으로 분석 시나리오/결과를 보여줍니다.`;
-}
-
 const SIDEBAR_COLLAPSED_KEY = 'mes-optimizer-sidebar-collapsed';
 
 /** 업로드 미리보기·컬럼 탐색 차트·증강 시뮬에 쓰는 데이터 행 수(헤더 제외). 통계 샘플(500행)과 비슷한 상한입니다. */
@@ -165,6 +151,13 @@ interface PreprocConfig {
   smoteStrategy: 'auto' | 'minority' | 'not_majority';
   timeseriesEnabled: boolean;
   timeseriesStrategy: 'window' | 'jitter';
+  timeseriesPreset: 'light' | 'balanced' | 'strong';
+  timeseriesApplyProb: number;
+  jitterNoiseStdPct: number;
+  windowRatio: number;
+  strideRatio: number;
+  overlapRatio: number;
+  timeseriesSeedLock: boolean;
 }
 
 const DEFAULT_PREPROC_CONFIG: PreprocConfig = {
@@ -177,7 +170,31 @@ const DEFAULT_PREPROC_CONFIG: PreprocConfig = {
   smoteStrategy: 'auto',
   timeseriesEnabled: false,
   timeseriesStrategy: 'window',
+  timeseriesPreset: 'balanced',
+  timeseriesApplyProb: 0.5,
+  jitterNoiseStdPct: 1.0,
+  windowRatio: 0.9,
+  strideRatio: 0.1,
+  overlapRatio: 0.5,
+  timeseriesSeedLock: true,
 };
+
+/** 시계열 증강 프리셋: 실무에서 자주 쓰는 약/중/강 시작점 */
+const TIMESERIES_PRESET_CONFIG: Record<
+  PreprocConfig['timeseriesPreset'],
+  Pick<
+    PreprocConfig,
+    'timeseriesApplyProb' | 'jitterNoiseStdPct' | 'windowRatio' | 'strideRatio' | 'overlapRatio'
+  >
+> = {
+  light: { timeseriesApplyProb: 0.35, jitterNoiseStdPct: 0.7, windowRatio: 0.95, strideRatio: 0.18, overlapRatio: 0.35 },
+  balanced: { timeseriesApplyProb: 0.5, jitterNoiseStdPct: 1.0, windowRatio: 0.9, strideRatio: 0.1, overlapRatio: 0.5 },
+  strong: { timeseriesApplyProb: 0.7, jitterNoiseStdPct: 1.8, windowRatio: 0.82, strideRatio: 0.06, overlapRatio: 0.7 },
+};
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
 
 const PREPROC_STEP_LABELS = ['결측치 / 타입 처리', '스케일링 / 피처 엔지니어링', '증강 (SMOTE / 시계열)'];
 
@@ -198,7 +215,9 @@ function preprocMethodsFromConfig(config: PreprocConfig): string[] {
   if (config.featureEngineering.includes('timediff')) methods.push('시간 차분');
   if (config.smoteEnabled) methods.push(`SMOTE 증강 (k=${config.smoteK})`);
   if (config.timeseriesEnabled) {
-    methods.push(`시계열 증강 (${config.timeseriesStrategy === 'window' ? '윈도우 슬라이싱' : 'Jitter'})`);
+    methods.push(
+      `시계열 증강 (${config.timeseriesStrategy === 'window' ? '윈도우 슬라이싱' : 'Jitter'}, ${config.timeseriesPreset})`
+    );
   }
   return methods;
 }
@@ -252,6 +271,9 @@ function applyTemplateToPreprocConfig(template: ResultTemplate, prev: PreprocCon
   const wantsTimeseries = has(/시계열|윈도우|time\s*series|window|차분/i);
   next.timeseriesEnabled = wantsTimeseries;
   next.timeseriesStrategy = has(/jitter|노이즈/i) ? 'jitter' : 'window';
+  next.timeseriesPreset = 'balanced';
+  Object.assign(next, TIMESERIES_PRESET_CONFIG.balanced);
+  next.timeseriesSeedLock = true;
 
   return next;
 }
@@ -474,6 +496,10 @@ function buildColumnAugmentationWave(
   preview: { headers: string[]; rows: string[][] } | null,
   baseCount: number,
   timeseriesAdded: number,
+  strategy: PreprocConfig['timeseriesStrategy'],
+  jitterNoiseStdPct: number,
+  windowRatio: number,
+  overlapRatio: number,
 ): {
   data: { x: number; 원본: number | null; 증강: number | null }[];
   splitX: number;
@@ -535,7 +561,10 @@ function buildColumnAugmentationWave(
       data.push({ x, 원본: y, 증강: null });
     } else {
       const j = i - split;
-      let y = yBase + span * 0.06 * Math.sin(j * 0.85) + span * 0.03 * Math.sin(j * 0.27 + 1);
+      const jitterAmp = clamp(jitterNoiseStdPct / 100, 0.002, 0.04);
+      const windowAmp = clamp((1 - windowRatio) * 0.28 + overlapRatio * 0.06, 0.02, 0.14);
+      const amp = strategy === 'jitter' ? jitterAmp : windowAmp;
+      let y = yBase + span * amp * Math.sin(j * 0.85) + span * (amp * 0.45) * Math.sin(j * 0.27 + 1);
       yMin = Math.min(yMin, y);
       yMax = Math.max(yMax, y);
       data.push({ x, 원본: null, 증강: y });
@@ -1035,8 +1064,21 @@ const App: React.FC = () => {
     const smoteAdded = preprocConfig.smoteEnabled
       ? Math.max(0, Math.round(baseCount * (preprocConfig.smoteStrategy === 'minority' ? 0.35 : 0.6)))
       : 0;
+    const safeProb = clamp(preprocConfig.timeseriesApplyProb, 0.1, 1);
+    const safeNoiseStd = clamp(preprocConfig.jitterNoiseStdPct, 0.3, 3.0);
+    const safeWindowRatio = clamp(preprocConfig.windowRatio, 0.7, 0.98);
+    const safeStrideRatio = clamp(preprocConfig.strideRatio, 0.02, 0.3);
+    const safeOverlapRatio = clamp(preprocConfig.overlapRatio, 0.1, 0.9);
+    const timeseriesAddedRatio =
+      preprocConfig.timeseriesStrategy === 'window'
+        ? clamp(
+            (0.12 + (((1 - safeWindowRatio) / safeStrideRatio) * (0.16 + safeOverlapRatio * 0.12))) * safeProb,
+            0.08,
+            1.9
+          )
+        : clamp((0.08 + (safeNoiseStd / 3) * 0.4) * safeProb, 0.05, 0.45);
     const timeseriesAdded = preprocConfig.timeseriesEnabled && hasTimeSeriesColumn
-      ? Math.max(0, Math.round(baseCount * (preprocConfig.timeseriesStrategy === 'window' ? 0.5 : 0.2)))
+      ? Math.max(0, Math.round(baseCount * timeseriesAddedRatio))
       : 0;
     const afterCount = baseCount + smoteAdded + timeseriesAdded;
 
@@ -1098,7 +1140,16 @@ const App: React.FC = () => {
           : eligibleAugWaveColumns[0] ?? analysisColumn;
     const columnTimeseriesWave =
       preprocConfig.timeseriesEnabled && hasTimeSeriesColumn
-        ? buildColumnAugmentationWave(waveColumn, dataPreview, baseCount, timeseriesAdded)
+        ? buildColumnAugmentationWave(
+            waveColumn,
+            dataPreview,
+            baseCount,
+            timeseriesAdded,
+            preprocConfig.timeseriesStrategy,
+            preprocConfig.jitterNoiseStdPct,
+            preprocConfig.windowRatio,
+            preprocConfig.overlapRatio
+          )
         : null;
     const qualityMissing = { name: '결측치', before: missingBefore, after: 0 };
     const qualityOutlier = { name: '이상치(%)', before: outlierBefore, after: outlierAfter };
@@ -1612,10 +1663,16 @@ const App: React.FC = () => {
                             tabIndex={0}
                             onClick={() => setSelectedTemplate(template)}
                             onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') setSelectedTemplate(template);
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                setSelectedTemplate(template);
+                              }
                             }}
-                            className={`px-5 py-5 flex flex-col gap-3 transition-colors cursor-pointer ${
-                              isSelected ? 'bg-indigo-50 border border-indigo-200' : 'hover:bg-slate-50 border border-transparent'
+                            aria-pressed={isSelected}
+                            className={`group px-5 py-5 flex flex-col gap-3 cursor-pointer rounded-lg border transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-300 focus-visible:ring-offset-1 ${
+                              isSelected
+                                ? 'bg-indigo-50 border-indigo-200 shadow-sm'
+                                : 'bg-white border-transparent hover:bg-slate-50 hover:border-indigo-200 hover:shadow-sm'
                             }`}
                             aria-label={`${template.name} 템플릿 선택`}
                           >
@@ -1636,13 +1693,23 @@ const App: React.FC = () => {
                                   ))}
                                 </div>
                                 <span className={`text-[10px] font-semibold ${suitabilityTextCls}`}>{suitabilityLabel}</span>
+                                <ChevronRight
+                                  className={`w-3.5 h-3.5 transition-colors ${
+                                    isSelected ? 'text-indigo-500' : 'text-slate-400 group-hover:text-indigo-500'
+                                  }`}
+                                  aria-hidden
+                                />
                               </div>
                             </div>
-                            {isSelected && (
-                              <div className="text-[10px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-full px-2.5 py-0.5 self-start">
-                                선택됨 (전처리 적용)
-                              </div>
-                            )}
+                            <div
+                              className={`text-[10px] font-semibold rounded-full px-2.5 py-0.5 self-start border ${
+                                isSelected
+                                  ? 'text-indigo-700 bg-indigo-50 border-indigo-200'
+                                  : 'text-slate-500 bg-white border-slate-200 group-hover:text-indigo-600 group-hover:border-indigo-200'
+                              }`}
+                            >
+                              {isSelected ? '선택됨 (전처리 적용)' : '클릭해 적용'}
+                            </div>
 
                             {/* 관련 MES 기능 뱃지 */}
                             <div className="flex flex-wrap gap-1">
@@ -1789,20 +1856,19 @@ const App: React.FC = () => {
                       }
                       templates={uploadTemplateRecommendations.map((r) => r.template)}
                     />
-                    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-                      <p className="text-[11px] text-slate-500 mb-1.5 font-semibold">
-                        노드 클릭 설명
-                      </p>
-                      <p className="text-xs text-slate-600 leading-relaxed">
-                        {structureMapSelectedNode
-                          ? describeOntologyNode(structureMapSelectedNode)
-                          : '그래프에서 노드를 클릭하면 해당 노드가 온톨로지에서 어떤 역할인지 간단히 설명해 드립니다.'}
-                      </p>
-                    </div>
+                    <p className="mt-2 text-[11px] text-slate-500">
+                      그래프에서 노드를 클릭하면 오른쪽에 상세 정보 패널이 열립니다.
+                    </p>
                   </div>
                 </div>
               </section>
             )}
+
+            {/* 분석 구조 맵 노드 클릭 시 표시되는 우측 상세 패널 */}
+            <OntologyNodeDetailPanel
+              selectedNode={structureMapSelectedNode}
+              onClose={() => setStructureMapSelectedNode(null)}
+            />
 
             {/* 파일 미업로드 시 안내 */}
             {!uploadedProcessFile && (
@@ -2114,7 +2180,37 @@ const App: React.FC = () => {
                         </div>
                         <p className="text-[9px] text-sky-800/70 mb-3">연속 구간 확장 전략</p>
                         {preprocConfig.timeseriesEnabled ? (
-                          <div className="space-y-1.5">
+                          <div className="space-y-3">
+                            <div className="rounded-md border border-slate-200 bg-white/80 p-2">
+                              <p className="text-[10px] text-slate-600 mb-1">강도 프리셋</p>
+                              <div className="grid grid-cols-3 gap-1.5">
+                                {([
+                                  { value: 'light', label: '약', desc: '보수적' },
+                                  { value: 'balanced', label: '중', desc: '권장' },
+                                  { value: 'strong', label: '강', desc: '탐색' },
+                                ] as { value: PreprocConfig['timeseriesPreset']; label: string; desc: string }[]).map((preset) => (
+                                  <button
+                                    key={preset.value}
+                                    type="button"
+                                    onClick={() =>
+                                      setPreprocConfig((c) => ({
+                                        ...c,
+                                        timeseriesPreset: preset.value,
+                                        ...TIMESERIES_PRESET_CONFIG[preset.value],
+                                      }))
+                                    }
+                                    className={`rounded-md border px-2 py-1.5 text-left transition-colors ${
+                                      preprocConfig.timeseriesPreset === preset.value
+                                        ? 'border-sky-300 bg-sky-50 text-sky-800'
+                                        : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
+                                    }`}
+                                  >
+                                    <p className="text-[10px] font-semibold">{preset.label}</p>
+                                    <p className="text-[9px] opacity-80">{preset.desc}</p>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
                             {([
                               {
                                 value: 'window',
@@ -2152,6 +2248,141 @@ const App: React.FC = () => {
                                 <span className="text-[9px] text-slate-500 pl-6">{opt.desc}</span>
                               </label>
                             ))}
+                            <div className="rounded-md border border-slate-200 bg-white/80 p-2.5 space-y-2.5">
+                              <div>
+                                <div className="flex items-center gap-1 mb-1">
+                                  <p className="text-[10px] text-slate-600">
+                                    적용 확률: <span className="font-semibold text-sky-700">{Math.round(preprocConfig.timeseriesApplyProb * 100)}%</span>
+                                  </p>
+                                  <PreprocHelpTip title="각 윈도/구간에 증강을 적용할 확률입니다. 과도한 증강을 피하려면 30~60%에서 시작하는 것이 안전합니다." />
+                                </div>
+                                <input
+                                  type="range"
+                                  min={0.1}
+                                  max={1}
+                                  step={0.05}
+                                  value={preprocConfig.timeseriesApplyProb}
+                                  onChange={(e) =>
+                                    setPreprocConfig((c) => ({
+                                      ...c,
+                                      timeseriesApplyProb: Number(e.target.value),
+                                      timeseriesPreset: 'balanced',
+                                    }))
+                                  }
+                                  className="w-full accent-sky-600 h-1.5"
+                                />
+                              </div>
+
+                              {preprocConfig.timeseriesStrategy === 'jitter' ? (
+                                <div>
+                                  <div className="flex items-center gap-1 mb-1">
+                                    <p className="text-[10px] text-slate-600">
+                                      노이즈 표준편차: <span className="font-semibold text-sky-700">{preprocConfig.jitterNoiseStdPct.toFixed(1)}%</span>
+                                    </p>
+                                    <PreprocHelpTip title="입력 시계열 표준편차 대비 노이즈 크기입니다. 일반적으로 0.5~2.0% 범위에서 검증 성능을 비교합니다." />
+                                  </div>
+                                  <input
+                                    type="range"
+                                    min={0.3}
+                                    max={3}
+                                    step={0.1}
+                                    value={preprocConfig.jitterNoiseStdPct}
+                                    onChange={(e) =>
+                                      setPreprocConfig((c) => ({
+                                        ...c,
+                                        jitterNoiseStdPct: Number(e.target.value),
+                                        timeseriesPreset: 'balanced',
+                                      }))
+                                    }
+                                    className="w-full accent-sky-600 h-1.5"
+                                  />
+                                </div>
+                              ) : (
+                                <>
+                                  <div>
+                                    <div className="flex items-center gap-1 mb-1">
+                                      <p className="text-[10px] text-slate-600">
+                                        window ratio: <span className="font-semibold text-sky-700">{preprocConfig.windowRatio.toFixed(2)}</span>
+                                      </p>
+                                      <PreprocHelpTip title="원 시계열 길이 대비 윈도 길이 비율입니다. 0.8~0.95가 실무에서 가장 자주 쓰입니다." />
+                                    </div>
+                                    <input
+                                      type="range"
+                                      min={0.7}
+                                      max={0.98}
+                                      step={0.01}
+                                      value={preprocConfig.windowRatio}
+                                      onChange={(e) =>
+                                        setPreprocConfig((c) => ({
+                                          ...c,
+                                          windowRatio: Number(e.target.value),
+                                          timeseriesPreset: 'balanced',
+                                        }))
+                                      }
+                                      className="w-full accent-sky-600 h-1.5"
+                                    />
+                                  </div>
+                                  <div>
+                                    <div className="flex items-center gap-1 mb-1">
+                                      <p className="text-[10px] text-slate-600">
+                                        stride ratio: <span className="font-semibold text-sky-700">{preprocConfig.strideRatio.toFixed(2)}</span>
+                                      </p>
+                                      <PreprocHelpTip title="윈도 이동 간격 비율입니다. 작을수록 샘플 수는 늘지만 유사 샘플이 많아질 수 있습니다." />
+                                    </div>
+                                    <input
+                                      type="range"
+                                      min={0.02}
+                                      max={0.3}
+                                      step={0.01}
+                                      value={preprocConfig.strideRatio}
+                                      onChange={(e) =>
+                                        setPreprocConfig((c) => ({
+                                          ...c,
+                                          strideRatio: Number(e.target.value),
+                                          timeseriesPreset: 'balanced',
+                                        }))
+                                      }
+                                      className="w-full accent-sky-600 h-1.5"
+                                    />
+                                  </div>
+                                  <div>
+                                    <div className="flex items-center gap-1 mb-1">
+                                      <p className="text-[10px] text-slate-600">
+                                        overlap ratio: <span className="font-semibold text-sky-700">{preprocConfig.overlapRatio.toFixed(2)}</span>
+                                      </p>
+                                      <PreprocHelpTip title="윈도 겹침 비율입니다. 0.3~0.7 구간에서 시작해 성능과 학습 시간의 균형을 맞춥니다." />
+                                    </div>
+                                    <input
+                                      type="range"
+                                      min={0.1}
+                                      max={0.9}
+                                      step={0.05}
+                                      value={preprocConfig.overlapRatio}
+                                      onChange={(e) =>
+                                        setPreprocConfig((c) => ({
+                                          ...c,
+                                          overlapRatio: Number(e.target.value),
+                                          timeseriesPreset: 'balanced',
+                                        }))
+                                      }
+                                      className="w-full accent-sky-600 h-1.5"
+                                    />
+                                  </div>
+                                </>
+                              )}
+
+                              <label className="flex items-center gap-2 cursor-pointer pt-0.5">
+                                <input
+                                  type="checkbox"
+                                  checked={preprocConfig.timeseriesSeedLock}
+                                  onChange={(e) => setPreprocConfig((c) => ({ ...c, timeseriesSeedLock: e.target.checked }))}
+                                  className="w-3.5 h-3.5 rounded accent-sky-600"
+                                />
+                                <span className="text-[10px] text-slate-600">
+                                  seed 고정 <span className="text-slate-400">(재현성 우선)</span>
+                                </span>
+                              </label>
+                            </div>
                           </div>
                         ) : (
                           <p className="text-[10px] text-slate-400 py-2">상단에서 시계열 증강을 켜면 설정할 수 있습니다.</p>
