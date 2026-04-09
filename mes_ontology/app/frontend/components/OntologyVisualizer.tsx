@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { MES_ONTOLOGY, ONTOLOGY_SECTION_DESCRIPTION_KO } from '../constants';
 import { MESFunction, ResultTemplate, OntologySelectedNode } from '../types';
 import OntologyGraph from './OntologyGraph';
+import { OntologyGraphHelpTip } from './OntologyGraphHelpTip';
 import {
   Network,
   Database,
@@ -33,6 +34,15 @@ const CategoryIcon = ({ category, className }: { category: string; className?: s
 
 const CATEGORY_ORDER = ['Tracking', 'Quality', 'Maintenance', 'Inventory', 'Production'] as const;
 
+/** 리스트·패널용 카테고리 한글명 (내부 키는 영문 유지) */
+const CATEGORY_LABEL_KO: Record<string, string> = {
+  Tracking: '추적',
+  Quality: '품질',
+  Maintenance: '보전',
+  Inventory: '재고',
+  Production: '생산',
+};
+
 function groupByCategory(ontology: MESFunction[]): Map<string, MESFunction[]> {
   const map = new Map<string, MESFunction[]>();
   for (const fn of ontology) {
@@ -47,6 +57,8 @@ function groupByCategory(ontology: MESFunction[]): Map<string, MESFunction[]> {
 export interface ResultSummaryForPanel {
   summary: string;
   topMatchName?: string;
+  /** 매칭 분석에 쓰인 피처(컬럼)명 — 요약 문구의 "N개 피처"와 대응 */
+  profileFeatureNames?: string[];
 }
 
 interface OntologyVisualizerProps {
@@ -77,7 +89,8 @@ const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = fals
         <>
           <div className="flex items-center gap-2 mb-2">
             <Database className="w-6 h-6 text-indigo-600" />
-            <h2 className="text-xl font-bold text-slate-800">Standard MES Ontology</h2>
+            <h2 className="text-xl font-bold text-slate-800">표준 MES 온톨로지</h2>
+            <OntologyGraphHelpTip />
           </div>
           <p className="text-sm text-slate-500 mb-4 leading-relaxed">
             {ONTOLOGY_SECTION_DESCRIPTION_KO}
@@ -107,7 +120,10 @@ const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = fals
         </>
       )}
       {embedded && (
-        <p className="text-sm text-slate-500 mb-4 leading-relaxed">{ONTOLOGY_SECTION_DESCRIPTION_KO}</p>
+        <div className="flex items-start gap-2 mb-4">
+          <p className="text-sm text-slate-500 leading-relaxed flex-1 min-w-0">{ONTOLOGY_SECTION_DESCRIPTION_KO}</p>
+          <OntologyGraphHelpTip className="mt-0.5" />
+        </div>
       )}
 
       {viewMode === 'graph' && (
@@ -136,9 +152,9 @@ const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = fals
                 >
                   <span className="text-slate-400">{isOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}</span>
                   <CategoryIcon category={category} className="w-5 h-5 shrink-0" />
-                  <span className="font-bold text-slate-800 uppercase tracking-wide text-sm">{category}</span>
+                  <span className="font-bold text-slate-800 tracking-wide text-sm">{CATEGORY_LABEL_KO[category] ?? category}</span>
                   <span className="text-xs px-2 py-0.5 bg-slate-200 text-slate-600 rounded-full font-medium">
-                    {functions.length} function{functions.length !== 1 ? 's' : ''}
+                    기능 {functions.length}개
                   </span>
                 </button>
                 {isOpen && (
@@ -159,7 +175,7 @@ const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = fals
                               <span className="text-[10px] font-bold text-indigo-600 bg-indigo-100 px-1.5 py-0.5 rounded">매칭</span>
                             )}
                             <span className="font-mono text-xs text-slate-400 group-hover:text-indigo-600">{fn.id}</span>
-                            <span className="font-semibold text-slate-800 group-hover:text-indigo-600 text-sm">{fn.name}</span>
+                            <span className="font-semibold text-slate-800 group-hover:text-indigo-600 text-sm">{fn.nameKo ?? fn.name}</span>
                             <span className="text-xs px-2 py-0.5 bg-slate-100 rounded font-medium text-slate-500">{fn.standard}</span>
                           </div>
                           <p className="text-xs text-slate-500 mt-0.5 line-clamp-1">{fn.descriptionKo ?? fn.description}</p>
@@ -192,10 +208,10 @@ const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = fals
           >
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 bg-slate-50 shrink-0">
               <span className="text-sm font-semibold text-slate-800">
-                {selectedNode.type === 'root' && 'L0 Root'}
-                {selectedNode.type === 'domain' && 'L1 Domain'}
-                {selectedNode.type === 'function' && 'L2 Function'}
-                {selectedNode.type === 'template' && 'L3 Template'}
+                {selectedNode.type === 'root' && 'L0 루트'}
+                {selectedNode.type === 'domain' && 'L1 도메인'}
+                {selectedNode.type === 'function' && 'L2 기능'}
+                {selectedNode.type === 'template' && 'L3 템플릿'}
               </span>
               <button
                 type="button"
@@ -222,7 +238,7 @@ const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = fals
                 <>
                   <div className="flex items-center gap-2">
                     <CategoryIcon category={selectedNode.data.category} className="w-6 h-6" />
-                    <h3 className="text-lg font-bold text-slate-800 uppercase tracking-wide">{selectedNode.data.label}</h3>
+                    <h3 className="text-lg font-bold text-slate-800 tracking-wide">{selectedNode.data.label}</h3>
                   </div>
                   <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">소속 기능 (L2)</p>
                   <ul className="space-y-2">
@@ -231,7 +247,7 @@ const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = fals
                       return fn ? (
                         <li key={fid} className="text-sm text-slate-700 flex items-center gap-2">
                           <span className="font-mono text-xs text-slate-400">{fn.id}</span>
-                          <span>{fn.name}</span>
+                          <span>{fn.nameKo ?? fn.name}</span>
                         </li>
                       ) : null;
                     })}
@@ -242,22 +258,24 @@ const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = fals
                 <>
                   <div className="flex items-center gap-2">
                     <CategoryIcon category={selectedNode.data.fn.category} className="w-6 h-6" />
-                    <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{selectedNode.data.fn.category} Module</span>
+                    <span className="text-xs font-bold text-slate-400 tracking-wider">
+                      {CATEGORY_LABEL_KO[selectedNode.data.fn.category] ?? selectedNode.data.fn.category} 모듈
+                    </span>
                   </div>
-                  <h3 className="text-lg font-bold text-slate-800">{selectedNode.data.fn.name}</h3>
+                  <h3 className="text-lg font-bold text-slate-800">{selectedNode.data.fn.nameKo ?? selectedNode.data.fn.name}</h3>
                   <div className="flex flex-wrap gap-2">
                     <span className="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-md text-xs font-medium">ID: {selectedNode.data.fn.id}</span>
-                    <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-md text-xs font-medium">Standard: {selectedNode.data.fn.standard}</span>
+                    <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-md text-xs font-medium">표준: {selectedNode.data.fn.standard}</span>
                   </div>
                   <section>
-                    <h4 className="text-xs font-semibold uppercase tracking-wider mb-2 flex items-center gap-2 border-b border-slate-200 border-l-4 border-l-indigo-500 pl-2 pb-1.5 text-indigo-700">
-                      <Info className="w-3.5 h-3.5 text-indigo-500" /> Description
+                    <h4 className="text-xs font-semibold tracking-wider mb-2 flex items-center gap-2 border-b border-slate-200 border-l-4 border-l-indigo-500 pl-2 pb-1.5 text-indigo-700">
+                      <Info className="w-3.5 h-3.5 text-indigo-500" /> 설명
                     </h4>
                     <p className="text-slate-600 text-sm leading-relaxed">{selectedNode.data.fn.descriptionKo ?? selectedNode.data.fn.description}</p>
                   </section>
                   <section>
-                    <h4 className="text-xs font-semibold uppercase tracking-wider mb-2 flex items-center gap-2 border-b border-slate-200 border-l-4 border-l-emerald-500 pl-2 pb-1.5 text-emerald-700">
-                      <CheckCircle className="w-3.5 h-3.5 text-emerald-500" /> Implementation Benefits
+                    <h4 className="text-xs font-semibold tracking-wider mb-2 flex items-center gap-2 border-b border-slate-200 border-l-4 border-l-emerald-500 pl-2 pb-1.5 text-emerald-700">
+                      <CheckCircle className="w-3.5 h-3.5 text-emerald-500" /> 도입 효과
                     </h4>
                     <ul className="space-y-2 text-sm text-slate-700">
                       <li className="flex items-start gap-3"><span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />가시성 향상 및 공정 병목 감소.</li>
@@ -281,6 +299,24 @@ const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = fals
                         <p className="text-slate-600 text-sm leading-relaxed">
                           {selectedNode.data.template.summary ?? resultSummary?.summary}
                         </p>
+                      </div>
+                    </section>
+                  )}
+                  {selectedNode.data.template.id === 'result-current' &&
+                    resultSummary?.profileFeatureNames &&
+                    resultSummary.profileFeatureNames.length > 0 && (
+                    <section className="mb-4">
+                      <h4 className="text-xs font-semibold tracking-wider pb-1.5 mb-2 border-b border-slate-200 border-l-4 border-l-violet-400 pl-2 text-violet-600">
+                        매칭에 사용된 피처 ({resultSummary.profileFeatureNames.length}개)
+                      </h4>
+                      <div className="pt-1 max-h-36 overflow-y-auto rounded-md bg-slate-50/80 px-3 py-2 border border-slate-100">
+                        <ul className="space-y-1">
+                          {resultSummary.profileFeatureNames.map((name, i) => (
+                            <li key={`${name}-${i}`} className="text-sm text-slate-600 leading-snug">
+                              {name}
+                            </li>
+                          ))}
+                        </ul>
                       </div>
                     </section>
                   )}
@@ -369,7 +405,7 @@ const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = fals
                             return fn ? (
                               <li key={fid} className="text-sm text-slate-700 flex items-center gap-2">
                                 <span className="font-mono text-xs text-slate-400">{fn.id}</span>
-                                <span>{fn.name}</span>
+                                <span>{fn.nameKo ?? fn.name}</span>
                               </li>
                             ) : null;
                           })}

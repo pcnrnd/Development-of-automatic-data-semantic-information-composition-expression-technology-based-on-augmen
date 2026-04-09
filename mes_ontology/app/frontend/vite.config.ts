@@ -9,6 +9,14 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
+        /** same-origin으로 /api → FastAPI(8000) 프록시. VITE_API_URL=/api 권장 */
+        proxy: {
+          '/api': {
+            target: 'http://127.0.0.1:8000',
+            changeOrigin: true,
+            rewrite: (p) => p.replace(/^\/api/, ''),
+          },
+        },
       },
       plugins: [react(), tailwindcss()],
       define: {

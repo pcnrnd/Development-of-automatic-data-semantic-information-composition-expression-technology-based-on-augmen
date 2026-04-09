@@ -27,6 +27,8 @@ export interface MESFunction {
   id: string;
   category: 'Production' | 'Quality' | 'Maintenance' | 'Inventory' | 'Tracking';
   name: string;
+  /** 한글 기능명 (UI 우선 표시) */
+  nameKo?: string;
   description: string;
   /** 한글 설명 (UI 표시용, 없으면 description 사용) */
   descriptionKo?: string;
@@ -37,6 +39,8 @@ export interface MatchingResult {
   functionId: string;
   score: number;
   rationale: string;
+  /** 매칭 근거 한글 (UI 우선 표시) */
+  rationaleKo?: string;
   priority: number; // 1-5
 }
 
@@ -88,4 +92,10 @@ export interface RecommendationReport {
   industry: IndustryType;
   matches: MatchingResult[];
   summary: string;
+}
+
+/** 결과 화면 인사이트: 짧은 제목 + 펼침 시 설명 */
+export interface AugmentationSuggestionItem {
+  title: string;
+  detail: string;
 }

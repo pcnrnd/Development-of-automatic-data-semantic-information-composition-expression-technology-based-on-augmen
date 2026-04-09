@@ -1,6 +1,7 @@
 /**
  * 백엔드 API 연동 (선택).
  * VITE_API_URL이 설정된 경우 Manufacturing Ontology API 호출.
+ * 개발 시 CORS 회피: vite.config.ts의 /api 프록시와 함께 VITE_API_URL=/api 사용.
  */
 
 const getBaseUrl = (): string => {
@@ -32,6 +33,9 @@ export interface AutoMLFitResult {
 export type AutomlFitResponse =
   | { ok: true; data: AutoMLFitResult }
   | { ok: false; error: string };
+
+/** `fetch` 예외 시 반환 메시지. UI에서 네트워크 실패 배너를 숨길 때 동일 문자열로 구분 */
+export const AUTOML_FETCH_FAILED_MESSAGE = '네트워크 오류 또는 서버에 연결할 수 없습니다.';
 
 /**
  * 백엔드 AutoML /automl/fit 호출.
@@ -65,7 +69,9 @@ export async function automlFit(
     }
     const data = (await res.json()) as AutoMLFitResult;
     return { ok: true, data };
-  } catch (_e) {
-    return { ok: false, error: '네트워크 오류 또는 서버에 연결할 수 없습니다.' };
+  } catch (e) {
+    // Failed to fetch: 백엔드 미기동, 잘못된 URL, CORS 차단, 혼합 콘텐츠 등
+    console.warn('[automlFit] fetch failed:', e);
+    return { ok: false, error: AUTOML_FETCH_FAILED_MESSAGE };
   }
 }

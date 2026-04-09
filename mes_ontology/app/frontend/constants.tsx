@@ -10,6 +10,7 @@ export const MES_ONTOLOGY: MESFunction[] = [
     id: 'F001',
     category: 'Tracking',
     name: 'Real-time Work-in-Progress (WIP) Tracking',
+    nameKo: '실시간 진행 현황 추적',
     description: 'Monitors the flow of materials and products through the production line in real-time.',
     descriptionKo: '생산 라인에서 자재·제품의 흐름을 실시간으로 모니터링합니다.',
     standard: 'ISA-95'
@@ -18,6 +19,7 @@ export const MES_ONTOLOGY: MESFunction[] = [
     id: 'F002',
     category: 'Quality',
     name: 'Statistical Process Control (SPC)',
+    nameKo: '통계적 공정 관리(SPC)',
     description: 'Uses statistical methods to monitor and control a process to ensure it operates at its full potential.',
     descriptionKo: '통계적 방법으로 공정을 모니터링·관리하여 품질을 유지합니다.',
     standard: 'ISO 9001'
@@ -26,6 +28,7 @@ export const MES_ONTOLOGY: MESFunction[] = [
     id: 'F003',
     category: 'Maintenance',
     name: 'Predictive Maintenance (PdM)',
+    nameKo: '예지 보전(PdM)',
     description: 'Predicts when equipment failure might occur so maintenance can be performed just-in-time.',
     descriptionKo: '설비 고장 시점을 예측하여 적시에 보전할 수 있도록 합니다.',
     standard: 'ISA-95'
@@ -34,6 +37,7 @@ export const MES_ONTOLOGY: MESFunction[] = [
     id: 'F004',
     category: 'Production',
     name: 'Dynamic Scheduling',
+    nameKo: '동적 생산 스케줄링',
     description: 'Automatically adjusts production schedules based on current machine availability and order priorities.',
     descriptionKo: '설비 가동률·수주 우선순위에 따라 생산 일정을 자동 조정합니다.',
     standard: 'ISA-95'
@@ -42,6 +46,7 @@ export const MES_ONTOLOGY: MESFunction[] = [
     id: 'F005',
     category: 'Inventory',
     name: 'Automated Traceability',
+    nameKo: '자동화 이력 추적',
     description: 'Ensures end-to-end traceability of components from supplier to finished goods.',
     descriptionKo: '부품부터 완제품까지 전 구간 이력 추적을 보장합니다.',
     standard: 'GS1'
@@ -50,6 +55,7 @@ export const MES_ONTOLOGY: MESFunction[] = [
     id: 'F006',
     category: 'Quality',
     name: 'Non-Conformance Management',
+    nameKo: '부적합(불량) 관리',
     description: 'Systematically handles defects and deviations in the manufacturing process.',
     descriptionKo: '불량·편차를 체계적으로 관리하고 이력화합니다.',
     standard: 'ISO 9001'
@@ -58,6 +64,7 @@ export const MES_ONTOLOGY: MESFunction[] = [
     id: 'F007',
     category: 'Production',
     name: 'Production Order Management',
+    nameKo: '생산 오더 관리',
     description: 'Manages production order release, progress, and completion, linking work orders with actuals.',
     descriptionKo: '생산 오더 배분·진행·완료를 관리하고, 작업 지시와 실적을 연동합니다.',
     standard: 'ISA-95'
@@ -66,6 +73,7 @@ export const MES_ONTOLOGY: MESFunction[] = [
     id: 'F008',
     category: 'Maintenance',
     name: 'Maintenance Scheduling',
+    nameKo: '보전 일정 관리',
     description: 'Allocates maintenance schedules, labor, and materials; plans equipment availability and periodic inspections.',
     descriptionKo: '보전 일정·인력·자재를 할당하고, 설비 가동률과 정기 점검을 계획합니다.',
     standard: 'ISA-95'
@@ -74,11 +82,25 @@ export const MES_ONTOLOGY: MESFunction[] = [
     id: 'F009',
     category: 'Tracking',
     name: 'Material Consumption Tracking',
+    nameKo: '자재 소비 추적',
     description: 'Tracks material and energy consumption in real time and manages lot/batch-level history.',
     descriptionKo: '자재·에너지 소비량을 실시간 추적하고, Lot/배치 단위 이력을 관리합니다.',
     standard: 'ISA-95'
   }
 ];
+
+/** 레이더·콤팩트 UI용 기능별 짧은 한글 라벨 */
+export const MES_FUNCTION_SHORT_LABEL_KO: Record<string, string> = {
+  F001: '진행 현황',
+  F002: '공정 품질관리',
+  F003: '예지 보전',
+  F004: '동적 일정 관리',
+  F005: '이력 추적',
+  F006: '불량 관리',
+  F007: '생산 오더 관리',
+  F008: '보전 계획',
+  F009: '자재 추적',
+};
 
 export const PIPELINE_STEPS = [
   'Data Profiling',
@@ -99,17 +121,32 @@ export const PIPELINE_STEPS_KO = [
 export const CONFIG_SECTION_DESCRIPTION_KO =
   '산업데이터 입력 후 AutoML로 모델 도출·필요 기능 추출 → 표준 MES 온톨로지와 매칭하여 우선순위를 제안합니다.';
 
+/** Priority Recommendation 섹션 제목 */
+export const PRIORITY_RECOMMENDATION_TITLE_KO = 'MES 기능 우선순위 추천';
+
 /** Priority Recommendation 섹션 한 줄 설명 */
 export const PRIORITY_RECOMMENDATION_DESCRIPTION_KO =
-  '매칭 결과를 바탕으로 제조기업에 필요한 MES 기능 제안 (Rule based 우선순위)';
+  '매칭 결과를 바탕으로 제조기업에 필요한 MES 기능 제안 (우선순위)';
 
-/** Insights(증강분석) 섹션 한 줄 설명 */
+/** Insights 섹션 안내 — 칩이 무엇인지 한눈에 */
 export const INSIGHTS_SECTION_DESCRIPTION_KO =
-  '산업데이터 증강분석 플랫폼 활용 제안: 필요기능·표준기능 매칭 품질 향상을 위한 보완 방향';
+  '아래 문장은 이번 데이터 프로파일과 상위 추천 MES 기능을 보고, 규칙으로 골라 낸 개선 아이디어입니다. 실제 수집·전처리·시스템 도입은 별도로 진행하면 됩니다.';
 
 /** Standard MES Ontology 섹션 한 줄 설명 */
 export const ONTOLOGY_SECTION_DESCRIPTION_KO =
   '다양한 산업데이터 모델링 결과를 반영한 국제 표준 MES 기능 모델 온톨로지';
+
+/**
+ * 온톨로지 그래프 ? 도움말: 노드·연결(관계)이 어떻게 잡히는지
+ * (줄바꿈은 UI에서 whitespace-pre-line로 표시)
+ */
+export const ONTOLOGY_GRAPH_RELATIONSHIPS_HELP_KO = `이 그래프는 표준 MES 온톨로지를 한눈에 보기 쉽게 펼친 구조입니다.
+
+• L0(가운데 루트) → L1(추적·품질·보전 등 도메인) → L2(기능 F001·F002 …) 순으로 안쪽에서 바깥으로 갈수록 구체적인 기능입니다.
+• L3(템플릿)은 참고·결과용 분석 시나리오이며, 미리 정해 둔 연결 정보로 해당 기능(L2)과만 선으로 이어집니다.
+• 분석 실행 후에는 데이터·규칙 매칭으로 고른 기능 노드가 강조되어, 어떤 표준 기능과 연결되는지 확인할 수 있습니다.
+
+선(엣지)은 사용자가 직접 그리는 것이 아니라, 앱에 정의된 온톨로지·템플릿 메타데이터를 따라 자동 배치됩니다.`;
 
 /**
  * 참조용 더미 템플릿. 온톨로지 그래프에 항상 함께 노출되어 사용자에게 참고할 분석 유형을 제시합니다.

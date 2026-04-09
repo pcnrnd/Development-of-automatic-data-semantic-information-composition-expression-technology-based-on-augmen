@@ -1,4 +1,12 @@
-import { DataProfile, IndustryType, MESFunction, MatchingResult, ResultTemplate } from '../types';
+import { MES_FUNCTION_SHORT_LABEL_KO } from '../constants';
+import {
+  AugmentationSuggestionItem,
+  DataProfile,
+  IndustryType,
+  MESFunction,
+  MatchingResult,
+  ResultTemplate,
+} from '../types';
 
 /**
  * 프로파일 키워드(표준명)와 MES 함수 ID 매핑 (규칙 기반 매칭용)
@@ -38,36 +46,109 @@ function getHintsForFeature(feat: string): string[] | undefined {
   return FEATURE_TO_FUNCTION_HINTS[canonical];
 }
 
-/** 프로파일·매칭 결과에 따라 Insights 문구 2~3개 선택 */
+/** 산업 타입 표시명 (매칭 근거 한글용) */
+const INDUSTRY_LABEL_KO: Record<IndustryType, string> = {
+  [IndustryType.AUTOMOTIVE]: '자동차',
+  [IndustryType.ELECTRONICS]: '전자',
+  [IndustryType.SEMICONDUCTOR]: '반도체',
+  [IndustryType.ELECTRICAL]: '전기·전력',
+  [IndustryType.HEAVY_INDUSTRY]: '중공업',
+};
+
+/** 매칭 rationale에 들어가는 영문 토큰 → 한글 (없으면 원문 유지) */
+const REASON_LABEL_KO: Record<string, string> = {
+  'Continuous sensor data': '연속형 센서 데이터',
+  Temperature: '온도',
+  Pressure: '압력',
+  Vibration: '진동',
+  Spindle_Speed: '스핀들 속도',
+  Torque: '토크',
+  Sensor: '센서',
+  State: '상태',
+};
+
+/** 산업별 우선 MES 기능 ID (순서 = 가중치). 템플릿 추천과 동일 정책. */
+const INDUSTRY_FUNCTION_BOOST: Partial<Record<IndustryType, string[]>> = {
+  [IndustryType.AUTOMOTIVE]: ['F001', 'F005', 'F002', 'F006'],
+  [IndustryType.ELECTRONICS]: ['F002', 'F003', 'F001', 'F004'],
+  [IndustryType.SEMICONDUCTOR]: ['F002', 'F003', 'F001', 'F009'],
+  [IndustryType.ELECTRICAL]: ['F003', 'F008', 'F002', 'F001'],
+  [IndustryType.HEAVY_INDUSTRY]: ['F003', 'F007', 'F001', 'F008'],
+};
+
+/** 매칭 점수에 더하는 산업별 가산값 (순위 1위~5위). 힌트 부재 시에도 기능별로 %가 갈리도록 함 */
+const INDUSTRY_MATCH_BOOST_DELTA = [0.11, 0.075, 0.048, 0.028, 0.014];
+
+/**
+ * 선택 산업에서 해당 기능 ID의 우선순위에 따른 점수 가산.
+ * 목록에 없으면 0 (다른 로직으로만 점수 형성).
+ */
+function industryMatchScoreDelta(fnId: string, industry: IndustryType): number {
+  const order = INDUSTRY_FUNCTION_BOOST[industry];
+  if (!order?.length) return 0;
+  const idx = order.indexOf(fnId);
+  if (idx < 0) return 0;
+  return INDUSTRY_MATCH_BOOST_DELTA[Math.min(idx, INDUSTRY_MATCH_BOOST_DELTA.length - 1)] ?? 0;
+}
+
+/** 프로파일·매칭 결과에 따라 Insights 2~3개 (제목 + 펼침용 설명) */
 function buildAugmentationSuggestions(
   profile: DataProfile,
   sortedMatches: MatchingResult[]
-): string[] {
+): AugmentationSuggestionItem[] {
   const topIds = new Set(sortedMatches.slice(0, 3).map((m) => m.functionId));
-  const pool: string[] = [];
+  const pool: AugmentationSuggestionItem[] = [];
   if (profile.seasonality) {
-    pool.push('시계열 집계 추가로 계절성 반영 (증강분석 활용)');
+    pool.push({
+      title: '시계열 집계로 계절·주기 반영',
+      detail:
+        '데이터에 계절성이 있다고 보이면, 일·주·월 단위로 평균·합계 등 집계 컬럼을 추가해 보세요. 추세와 주기가 드러나면 AutoML·온톨로지 매칭에도 같은 정보가 반영되기 쉽습니다.',
+    });
   }
   if (topIds.has('F002')) {
-    pool.push('주요 센서 채널 SPC 한계값 검토');
+    pool.push({
+      title: '공정 품질(SPC)용 센서 한계선 검토',
+      detail:
+        '상위 추천에 품질(SPC) 기능이 포함되어 있습니다. 온도·압력 등 주요 센서마다 규격 상한·하한(관리도 한계)을 정의하면 이상 징후를 일관되게 잡을 수 있습니다.',
+    });
   }
   if (topIds.has('F003')) {
-    pool.push('보전 이력 데이터 보강으로 PdM 정확도 향상');
+    pool.push({
+      title: '예지 보전을 위한 보전·고장 이력 보강',
+      detail:
+        '예지 보전(PdM)이 상위에 있으면, 정비 일시·부품 교체·알람·다운타임 같은 이력을 설비 ID와 묶어 쌓는 것이 좋습니다. 라벨이 있으면 고장 예측 모델 품질이 크게 좋아질 수 있습니다.',
+    });
   }
   if (profile.missingValues > 10) {
-    pool.push('결측치 보강으로 매칭 품질 향상');
+    pool.push({
+      title: '결측치 보강으로 매칭 안정화',
+      detail:
+        '결측 비율이 높으면 규칙 기반 매칭 점수도 흔들릴 수 있습니다. 단순 대체·보간·구간 평균 등으로 채운 뒤 다시 분석해 보는 것을 권합니다.',
+    });
   }
   if (topIds.has('F005')) {
-    pool.push('추적성 데이터 확보 시 이력 추적 기능 추천');
+    pool.push({
+      title: 'Lot·공정 이력으로 추적성 강화',
+      detail:
+        '이력 추적 기능이 상위입니다. Lot/배치·시리얼·공정 단계·시각 정보가 한 줄에 이어지도록 데이터를 정리하면 추적·리콜 대응 분석에 유리합니다.',
+    });
   }
   if (topIds.has('F004')) {
-    pool.push('일정·설비 상태 데이터 보강으로 동적 스케줄링 추천');
+    pool.push({
+      title: '일정·설비 데이터로 스케줄링 보완',
+      detail:
+        '동적 생산 일정이 상위 추천입니다. 작업 오더·납기·설비 가동/비가동을 같은 시간축에 두면 일정 최적화·병목 분석에 활용하기 좋습니다.',
+    });
   }
-  pool.push('데이터 품질·채널 보강 시 매칭 정확도 향상');
+  pool.push({
+    title: '데이터 정의·채널 확대',
+    detail:
+      '컬럼명을 현장 표준(설비코드, 공정명 등)에 맞추고, 센서·이력 채널을 늘리면 다음 실행에서 매칭과 모델이 더 안정적으로 나오는 경우가 많습니다.',
+  });
   const seen = new Set<string>();
-  return pool.filter((s) => {
-    if (seen.has(s)) return false;
-    seen.add(s);
+  return pool.filter((item) => {
+    if (seen.has(item.title)) return false;
+    seen.add(item.title);
     return true;
   }).slice(0, 3);
 }
@@ -84,7 +165,7 @@ export async function analyzeDataAndMatch(
 ): Promise<{
   matches: MatchingResult[];
   summary: string;
-  augmentationSuggestions: string[];
+  augmentationSuggestions: AugmentationSuggestionItem[];
 } | null> {
   const matches: MatchingResult[] = [];
   const featureCount = profile.features.length;
@@ -106,17 +187,25 @@ export async function analyzeDataAndMatch(
       score += 0.08;
       reasons.push('Continuous sensor data');
     }
+    score += industryMatchScoreDelta(fn.id, industry);
+    score = Math.min(1, score);
     score = Math.min(1, score * signalStrength * (0.9 + completeness * 0.1));
 
-    const rationale =
+    const fnNameKo = fn.nameKo ?? fn.name;
+    const industryKo = INDUSTRY_LABEL_KO[industry] ?? String(industry);
+    const rationaleKo =
       reasons.length > 0
-        ? `Data profile (${reasons.slice(0, 3).join(', ')}) aligns with ${fn.name}.`
-        : `General fit for ${industry} and current data scale (${profile.recordsCount} records).`;
+        ? `데이터 프로파일 특성(${reasons
+            .slice(0, 3)
+            .map((r) => REASON_LABEL_KO[r] ?? r)
+            .join(', ')})이 「${fnNameKo}」 기능과 잘 맞습니다.`
+        : `${industryKo} 도메인을 고려한 일반적인 적합도입니다.`;
 
     matches.push({
       functionId: fn.id,
       score: Math.round(score * 100) / 100,
-      rationale,
+      rationale: rationaleKo,
+      rationaleKo,
       priority: score >= 0.7 ? 1 : score >= 0.5 ? 2 : 3,
     });
   }
@@ -128,28 +217,24 @@ export async function analyzeDataAndMatch(
     m.priority = priorityOrder[Math.min(p++, priorityOrder.length - 1)];
   }
 
-  const topNames = matches
+  const industryKoForSummary = INDUSTRY_LABEL_KO[industry] ?? String(industry);
+  const topNamesKo = matches
     .slice(0, 2)
-    .map((m) => ontology.find((o) => o.id === m.functionId)?.name?.split(' ')[0])
+    .map(
+      (m) =>
+        MES_FUNCTION_SHORT_LABEL_KO[m.functionId] ??
+        ontology.find((o) => o.id === m.functionId)?.nameKo,
+    )
     .filter(Boolean)
     .join(', ');
-  const summary = topNames
-    ? `산업데이터 ${featureCount}개 피처, ${profile.recordsCount}건 기준으로 필요기능–표준기능 매칭을 수행했습니다. ${industry} 도메인에 맞는 상위 추천: ${topNames}. 데이터 품질과 결측 수준을 반영한 우선순위를 제안합니다.`
-    : `산업데이터 ${featureCount}개 피처, ${profile.recordsCount}건 기준으로 필요기능–표준기능 매칭을 수행했습니다. 데이터 품질과 결측 수준을 반영하여 ${industry} 도메인에 맞는 MES 기능 우선순위를 제안합니다.`;
+  const summary = topNamesKo
+    ? `산업데이터 ${featureCount}개 피처를 바탕으로 필요기능–표준기능 매칭을 수행했습니다. ${industryKoForSummary} 도메인에 맞는 상위 추천: ${topNamesKo}. 데이터 품질과 결측 수준을 반영한 우선순위를 제안합니다.`
+    : `산업데이터 ${featureCount}개 피처를 바탕으로 필요기능–표준기능 매칭을 수행했습니다. 데이터 품질과 결측 수준을 반영하여 ${industryKoForSummary} 도메인에 맞는 MES 기능 우선순위를 제안합니다.`;
 
   const augmentationSuggestions = buildAugmentationSuggestions(profile, matches);
 
   return { matches, summary, augmentationSuggestions };
 }
-
-/** 산업별 우선 MES 기능 ID (순서 = 가중치 우선순위) */
-const INDUSTRY_FUNCTION_BOOST: Partial<Record<IndustryType, string[]>> = {
-  [IndustryType.AUTOMOTIVE]:     ['F001', 'F005', 'F002', 'F006'],
-  [IndustryType.ELECTRONICS]:    ['F002', 'F003', 'F001', 'F004'],
-  [IndustryType.SEMICONDUCTOR]:  ['F002', 'F003', 'F001', 'F009'],
-  [IndustryType.ELECTRICAL]:     ['F003', 'F008', 'F002', 'F001'],
-  [IndustryType.HEAVY_INDUSTRY]: ['F003', 'F007', 'F001', 'F008'],
-};
 
 /** 기능별 인스턴스 커버리지 판단 기준 속성 */
 const FUNCTION_COVERAGE_ATTRS: Record<string, { label: string; keywords: string[] }[]> = {

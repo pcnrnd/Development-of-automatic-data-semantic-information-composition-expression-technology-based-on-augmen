@@ -15,7 +15,16 @@ app = FastAPI(title="Manufacturing Ontology API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3001", "http://localhost:80", "http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3001",
+        "http://localhost:80",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:80",
+    ],
+    # Vite 기본 포트 변경·LAN IP 등: localhost / 127.0.0.1 + 임의 포트 (개발용)
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

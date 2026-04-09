@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import {
   ReactFlow,
   Controls,
@@ -27,31 +27,40 @@ import {
 
 const CATEGORY_ORDER = ['Tracking', 'Quality', 'Maintenance', 'Inventory', 'Production'] as const;
 
-/** 카테고리 약어 (원형 노드 내 가독성) */
+/** 그래프 노드 툴팁·L1 라벨용 카테고리 한글명 */
+const CATEGORY_LABEL_KO: Record<string, string> = {
+  Tracking: '추적',
+  Quality: '품질',
+  Maintenance: '보전',
+  Inventory: '재고',
+  Production: '생산',
+};
+
+/** 카테고리 약어 (원형 노드 내 표시) */
 const CATEGORY_SHORT: Record<string, string> = {
-  Tracking: 'Track',
-  Quality: 'Quality',
-  Maintenance: 'Maint',
-  Inventory: 'Inv',
-  Production: 'Prod',
+  Tracking: '추적',
+  Quality: '품질',
+  Maintenance: '보전',
+  Inventory: '재고',
+  Production: '생산',
 };
 
 /** 기능 노드 원형 내부 약어 */
 const FUNCTION_SHORT: Record<string, string> = {
-  F001: 'WIP',
-  F002: 'SPC',
-  F003: 'PdM',
-  F004: 'Sched',
-  F005: 'Trace',
-  F006: 'NCM',
-  F007: 'POM',
-  F008: 'Maint',
-  F009: 'Mat',
+  F001: '진행',
+  F002: '공정',
+  F003: '예지',
+  F004: '일정',
+  F005: '이력',
+  F006: '불량',
+  F007: '오더',
+  F008: '보전',
+  F009: '자재',
 };
 
 /** 기능 노드 외부 한글 라벨 */
 const FN_LABEL_KO: Record<string, string> = {
-  F001: 'WIP 추적',
+  F001: '진행 현황',
   F002: '공정 품질',
   F003: '예지 보전',
   F004: '일정 관리',
@@ -70,6 +79,15 @@ function groupByCategory(ontology: MESFunction[]): Map<string, MESFunction[]> {
     map.set(fn.category, list);
   }
   return map;
+}
+
+/** L3 템플릿 시각 구분: 참조 카탈로그 / 매칭 L2와 연결 / 이번 분석 결과(결과 화면 전용 id) */
+type TemplateVariant = 'reference' | 'matchLinked' | 'analysisResult';
+
+function getTemplateVariant(tpl: ResultTemplate, highlightedIdSet: Set<string> | null): TemplateVariant {
+  if (tpl.id === 'result-current') return 'analysisResult';
+  if (highlightedIdSet && tpl.recommendedFunctionIds.some((fid) => highlightedIdSet.has(fid))) return 'matchLinked';
+  return 'reference';
 }
 
 const CategoryIcon = ({ category, size = 14 }: { category: string; size?: number }) => {
@@ -123,7 +141,7 @@ function CategoryNode({ data }: NodeProps<{ label: string; category: string; sho
       <Handle type="source" position={source} className="!w-0 !h-0 !min-w-0 !min-h-0 !border-0 !opacity-0" />
       <span className="absolute -top-0.5 -right-0.5 text-[8px] font-semibold text-slate-400 bg-slate-100 rounded px-1">L1</span>
       <CategoryIcon category={data.category} size={20} />
-      <span className="font-bold text-slate-800 text-xs uppercase leading-tight mt-0.5 tracking-wide">{label}</span>
+      <span className="font-bold text-slate-800 text-xs leading-tight mt-0.5 tracking-wide">{label}</span>
     </div>
   );
 }
@@ -155,16 +173,45 @@ function FunctionNode({ data, selected }: NodeProps<{ label: string; id: string;
   );
 }
 
-/** L3 템플릿 노드: 블루 채운 원형. 이름은 원 외부에 표시해 가독성 확보 */
-function TemplateNode({ data }: NodeProps<{ label: string; templateId: string; template?: ResultTemplate }>) {
+/**
+ * L3 템플릿 노드: 참조(블루)·매칭 연계(인디고)·분석 결과(에메랄드)로 구분.
+ * templateVariant는 buildGraphElements에서 highlightedIds·템플릿 id 기준으로 설정합니다.
+ */
+function TemplateNode({
+  data,
+}: NodeProps<{
+  label: string;
+  templateId: string;
+  template?: ResultTemplate;
+  templateVariant?: TemplateVariant;
+}>) {
+  const v = data.templateVariant ?? 'reference';
+  const shell =
+    v === 'analysisResult'
+      ? 'bg-emerald-200 border-emerald-500 ring-emerald-200/70'
+      : v === 'matchLinked'
+        ? 'bg-indigo-200 border-indigo-500 ring-indigo-200/70'
+        : 'bg-sky-200 border-sky-500 ring-sky-200/70';
+  const icon =
+    v === 'analysisResult' ? 'text-emerald-900' : v === 'matchLinked' ? 'text-indigo-900' : 'text-sky-900';
+  const badge =
+    v === 'analysisResult'
+      ? 'text-emerald-800 bg-emerald-100'
+      : v === 'matchLinked'
+        ? 'text-indigo-800 bg-indigo-100'
+        : 'text-sky-800 bg-sky-100';
+  const caption =
+    v === 'analysisResult' ? 'text-emerald-800' : v === 'matchLinked' ? 'text-indigo-800' : 'text-sky-800';
   return (
     <div className="flex flex-col items-center gap-1" title={data.label}>
-      <div className="relative w-[4.5rem] h-[4.5rem] rounded-full bg-blue-300 border-2 border-blue-400 shadow-lg ring-2 ring-blue-200/60 flex flex-col items-center justify-center cursor-pointer">
+      <div
+        className={`relative w-[4.5rem] h-[4.5rem] rounded-full border-2 shadow-md ring-2 flex flex-col items-center justify-center cursor-pointer ${shell}`}
+      >
         <Handle type="source" position={Position.Bottom} className="!w-0 !h-0 !min-w-0 !min-h-0 !border-0 !opacity-0" />
-        <LayoutTemplate className="w-5 h-5 text-blue-900 shrink-0" />
-        <span className="absolute -top-0.5 right-0.5 text-[8px] font-semibold text-blue-700 bg-blue-100 rounded px-1">L3</span>
+        <LayoutTemplate className={`w-5 h-5 shrink-0 ${icon}`} />
+        <span className={`absolute -top-0.5 right-0.5 text-[8px] font-semibold rounded px-1 ${badge}`}>L3</span>
       </div>
-      <span className="text-[10px] font-semibold text-blue-700 leading-tight whitespace-nowrap max-w-[90px] text-center">{data.label}</span>
+      <span className={`text-[10px] font-semibold leading-tight whitespace-nowrap max-w-[90px] text-center ${caption}`}>{data.label}</span>
     </div>
   );
 }
@@ -201,7 +248,7 @@ function buildGraphElements(
     id: ROOT_ID,
     type: 'root',
     position: { x: cx - 40, y: cy - 40 },
-    data: { label: 'Standard MES' },
+    data: { label: '표준 MES' },
     sourcePosition: Position.Bottom,
     targetPosition: Position.Top,
   });
@@ -227,7 +274,14 @@ function buildGraphElements(
       id,
       type: 'category',
       position: { x: x - 36, y: y - 36 },
-      data: { label: cat, category: cat, shortLabel: CATEGORY_SHORT[cat] ?? cat, targetPos, sourcePos, functionIds: list.map((f) => f.id) },
+      data: {
+        label: CATEGORY_LABEL_KO[cat] ?? cat,
+        category: cat,
+        shortLabel: CATEGORY_SHORT[cat] ?? cat,
+        targetPos,
+        sourcePos,
+        functionIds: list.map((f) => f.id),
+      },
       sourcePosition: sourcePos,
       targetPosition: targetPos,
     });
@@ -265,7 +319,7 @@ function buildGraphElements(
         type: 'function',
         position: { x: fx - 32, y: fy - 32 },
         data: {
-          label: fn.name,
+          label: fn.nameKo ?? fn.name,
           id: fn.id,
           standard: fn.standard,
           fn,
@@ -288,6 +342,7 @@ function buildGraphElements(
 
   // L3 템플릿: 연결된 L2 Function 근처에 배치.
   const templateList = templates?.length ? templates : [];
+  const highlightedIdSet = highlightedIds?.length ? new Set(highlightedIds) : null;
   const byPrimaryFid = new Map<string, number[]>();
   templateList.forEach((tpl, tplIdx) => {
     const primaryFid = tpl.recommendedFunctionIds[0] ?? '';
@@ -322,22 +377,31 @@ function buildGraphElements(
       ty = cy + R3 * Math.sin(angle);
     }
 
+    const templateVariant = getTemplateVariant(tpl, highlightedIdSet);
     nodes.push({
       id: tplId,
       type: 'template',
       position: { x: tx - 36, y: ty - 36 },
-      data: { label: tpl.name, templateId: tpl.id, template: tpl },
+      data: { label: tpl.name, templateId: tpl.id, template: tpl, templateVariant },
       sourcePosition: Position.Bottom,
       targetPosition: Position.Top,
     });
 
     tpl.recommendedFunctionIds.forEach((fid) => {
+      const toHighlighted = highlightedIdSet?.has(fid) ?? false;
+      const isAnalysisTpl = tpl.id === 'result-current';
+      const stroke = isAnalysisTpl ? '#059669' : toHighlighted ? '#6366f1' : '#38bdf8';
+      const strong = isAnalysisTpl || toHighlighted;
       edges.push({
         id: `e-${tplId}-${fid}`,
         source: tplId,
         target: fid,
         type: 'straight',
-        style: { stroke: '#60a5fa', strokeWidth: 2, strokeDasharray: '5 3' },
+        style: {
+          stroke,
+          strokeWidth: strong ? 2.5 : 1.75,
+          strokeDasharray: strong ? undefined : '5 3',
+        },
       });
     });
   });
@@ -367,12 +431,18 @@ const OntologyGraph: React.FC<OntologyGraphProps> = ({
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
+  /** highlightedIds·templates 변경 시 그래프를 다시 채웁니다(useNodesState 초기값은 마운트 시 한 번만 적용됨). */
+  useEffect(() => {
+    setNodes(initialNodes);
+    setEdges(initialEdges);
+  }, [initialNodes, initialEdges, setNodes, setEdges]);
+
   const onNodeClick = React.useCallback(
     (_: React.MouseEvent, node: Node) => {
       if (!onSelectNode && !onSelectFunction) return;
       switch (node.type) {
         case 'root':
-          onSelectNode?.({ type: 'root', data: { label: (node.data?.label as string) ?? 'Standard MES' } });
+          onSelectNode?.({ type: 'root', data: { label: (node.data?.label as string) ?? '표준 MES' } });
           break;
         case 'category': {
           const d = node.data as { category?: string; label?: string; functionIds?: string[] };
@@ -402,14 +472,18 @@ const OntologyGraph: React.FC<OntologyGraphProps> = ({
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-200 bg-white/80">
         <div>
           <h3 className="text-sm font-semibold text-slate-800">Ontology Structure</h3>
-          <p className="text-[10px] text-slate-500 mt-0.5">L0 Root · L1 Domain · L2 Function · L3 Template</p>
+          <p className="text-[10px] text-slate-500 mt-0.5">
+            L0 Root · L1 Domain · L2 Function · L3 참조/매칭연계/분석결과 템플릿
+          </p>
         </div>
-        <div className="flex items-center gap-3 text-[10px] text-slate-500">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 justify-end max-w-[min(100%,520px)] text-[10px] text-slate-500">
           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-slate-700" /> Root</span>
           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-white border-2 border-slate-300" /> Domain</span>
           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-white border-2 border-slate-300" /> Function</span>
           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-indigo-50 border-2 border-indigo-500" /> 매칭 기능</span>
-          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-blue-300 border-2 border-blue-400" /> Template</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-sky-200 border-2 border-sky-500" /> 참조 L3</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-indigo-200 border-2 border-indigo-500" /> 매칭 연계 L3</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-emerald-200 border-2 border-emerald-500" /> 분석 결과 L3</span>
         </div>
       </div>
       <div className="relative" style={{ height: height - 52 }}>
