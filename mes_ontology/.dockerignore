@@ -1,0 +1,12 @@
+# deploy/docker-compose.yaml 의 build context: mes_ontology 루트
+.git
+**/.git
+**/node_modules
+**/dist
+**/__pycache__
+**/.venv
+**/venv
+*.pyc
+.env
+**/.env
+!.env.example

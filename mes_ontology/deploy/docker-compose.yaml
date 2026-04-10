@@ -1,6 +1,7 @@
-# mes_ontology 전체 스택 (Neo4j + FastAPI + Vite/nginx 프론트)
-# 사용: docker compose -f deploy/docker-compose.yaml up --build -d
-# 루트 기준 경로는 mes_ontology 디렉터리에서 실행할 것
+# mes_ontology 루트에서 실행:
+#   docker compose -f deploy/docker-compose.yaml up --build -d
+#
+# 빌드 context 는 항상 mes_ontology 루트(..)로 고정해 compose 실행 위치와 무관하게 동작합니다.
 
 services:
   neo4j:
@@ -30,8 +31,8 @@ services:
 
   backend:
     build:
-      context: ../app/backend
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: deploy/Dockerfile.backend
     container_name: mes-ontology-backend
     volumes:
       - ../app/ontology:/app/ontology
@@ -54,8 +55,8 @@ services:
 
   frontend:
     build:
-      context: ../app/frontend
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
       args:
         VITE_API_URL: /api
     container_name: mes-ontology-frontend
