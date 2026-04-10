@@ -2,7 +2,7 @@
 제조 데이터 관리 API (라인, 작업지시, 품질, 설비).
 """
 from datetime import datetime
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from db.neo4j import neo4j_run
 from models.schemas import WorkOrder, QualityControl
@@ -11,7 +11,7 @@ router = APIRouter(prefix="/manufacturing", tags=["manufacturing"])
 
 
 @router.get("/lines")
-def get_manufacturing_lines():
+def get_manufacturing_lines(limit: int = Query(200, ge=1, le=2000)):
     """제조 라인 목록 조회."""
     rows = neo4j_run("""
     MATCH (e:Equipment)
@@ -19,7 +19,8 @@ def get_manufacturing_lines():
     RETURN e.uri AS id,
            coalesce(e.`rdfs__label`, e.name, 'Unnamed Equipment') AS name,
            labels(e) AS types
-    """)
+    LIMIT $limit
+    """, limit=limit)
     return {"lines": [dict(row) for row in rows]}
 
 
@@ -29,15 +30,32 @@ def get_manufacturing_line(line_id: str):
     rows = neo4j_run("""
     MATCH (e:Equipment {uri: $line_id})
     OPTIONAL MATCH (e)-[r]->(related)
-    RETURN e, r, related
+    RETURN e.uri AS id,
+           coalesce(e.`rdfs__label`, e.name) AS name,
+           labels(e) AS types,
+           properties(e) AS props,
+           collect(DISTINCT CASE WHEN related IS NOT NULL THEN {
+               type: type(r),
+               targetUri: related.uri,
+               targetLabel: coalesce(related.`rdfs__label`, related.name)
+           } END) AS relations
     """, line_id=line_id)
     if not rows:
         raise HTTPException(status_code=404, detail="Line not found")
-    return {"line": dict(rows[0])}
+    row = rows[0]
+    return {
+        "line": {
+            "id": row["id"],
+            "name": row["name"],
+            "types": row["types"],
+            "props": dict(row["props"]) if row["props"] else {},
+            "relations": [r for r in row["relations"] if r],
+        }
+    }
 
 
 @router.get("/work-orders")
-def get_work_orders():
+def get_work_orders(limit: int = Query(200, ge=1, le=2000)):
     """작업지시서 목록 조회."""
     rows = neo4j_run("""
     MATCH (w:WorkOrder)
@@ -48,7 +66,8 @@ def get_work_orders():
            w.actualQuantity AS actualQuantity,
            w.status AS status,
            coalesce(e.`rdfs__label`, e.name) AS equipmentName
-    """)
+    LIMIT $limit
+    """, limit=limit)
     return {"workOrders": [dict(row) for row in rows]}
 
 

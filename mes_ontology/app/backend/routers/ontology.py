@@ -1,6 +1,7 @@
 """
 온톨로지 검증·임포트 및 Triple CRUD API.
 """
+import re
 from typing import Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from rdflib import Graph
@@ -11,6 +12,22 @@ from models.schemas import ImportResult, Triple, BulkTripleOperation
 
 router = APIRouter(prefix="/ontology", tags=["ontology"])
 
+# Cypher 관계 타입으로 사용 가능한 식별자 패턴 (Cypher 인젝션 방지)
+_RELATION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+# 업로드 파일 크기 상한 (TTL): 16MB
+_MAX_TTL_BYTES = 16 * 1024 * 1024
+
+
+def _validate_predicate(predicate: str) -> str:
+    """관계 이름 화이트리스트 검증 — Cypher 인젝션 차단."""
+    if not predicate or not _RELATION_NAME_RE.match(predicate):
+        raise HTTPException(
+            status_code=400,
+            detail="predicate must match ^[A-Za-z_][A-Za-z0-9_]{0,127}$",
+        )
+    return predicate
+
 
 @router.post("/validate-and-import", response_model=ImportResult)
 async def validate_and_import(
@@ -20,8 +37,18 @@ async def validate_and_import(
     """SHACL 검증 후 Neo4j n10s로 임포트."""
     data_bytes = await data_ttl.read()
     shapes_bytes = await shapes_ttl.read()
-    data_g = Graph().parse(data=data_bytes.decode("utf-8"), format="turtle")
-    shapes_g = Graph().parse(data=shapes_bytes.decode("utf-8"), format="turtle")
+    if len(data_bytes) > _MAX_TTL_BYTES or len(shapes_bytes) > _MAX_TTL_BYTES:
+        raise HTTPException(status_code=413, detail=f"TTL upload exceeds {_MAX_TTL_BYTES} bytes")
+    try:
+        data_text = data_bytes.decode("utf-8")
+        shapes_text = shapes_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="TTL files must be UTF-8 encoded")
+    try:
+        data_g = Graph().parse(data=data_text, format="turtle")
+        shapes_g = Graph().parse(data=shapes_text, format="turtle")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse TTL: {e}")
     conforms, report_graph, report_text = validate(
         data_g, shacl_graph=shapes_g, inference="rdfs", serialize_report_graph=True
     )
@@ -31,22 +58,25 @@ async def validate_and_import(
     CALL n10s.rdf.import.inline($ttl, "Turtle")
     YIELD terminationStatus, triplesLoaded
     RETURN terminationStatus AS status, triplesLoaded AS count
-    """, ttl=data_bytes.decode("utf-8"))
-    count = res[0]["count"] if res else 0
+    """, ttl=data_text)
+    count = sum((row["count"] or 0) for row in res) if res else 0
     return ImportResult(triplesLoaded=count, validationConforms=True)
 
 
 @router.post("/triples")
 def create_triple(triple: Triple):
     """관계(Triple) 추가."""
+    predicate = _validate_predicate(triple.predicate)
     try:
         neo4j_run("""
         MATCH (s:Resource {uri: $subject})
         MATCH (o:Resource {uri: $object})
         CALL apoc.create.relationship(s, $predicate, {}, o) YIELD rel
         RETURN rel
-        """, subject=triple.subject, predicate=triple.predicate, object=triple.object)
+        """, subject=triple.subject, predicate=predicate, object=triple.object)
         return {"message": "Triple created successfully"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -64,8 +94,8 @@ def get_triples(
         where_clauses.append("s.uri = $subject")
         params["subject"] = subject
     if predicate:
+        params["predicate"] = _validate_predicate(predicate)
         where_clauses.append("type(r) = $predicate")
-        params["predicate"] = predicate
     if object:
         where_clauses.append("o.uri = $object")
         params["object"] = object
@@ -83,13 +113,14 @@ def get_triples(
 @router.delete("/triples")
 def delete_triple(triple: Triple):
     """관계 삭제."""
+    predicate = _validate_predicate(triple.predicate)
     try:
         result = neo4j_run("""
         MATCH (s:Resource {uri: $subject})-[r]->(o:Resource {uri: $object})
         WHERE type(r) = $predicate
         DELETE r
         RETURN count(r) AS deleted
-        """, subject=triple.subject, predicate=triple.predicate, object=triple.object)
+        """, subject=triple.subject, predicate=predicate, object=triple.object)
         if result and result[0]["deleted"] > 0:
             return {"message": "Triple deleted successfully"}
         raise HTTPException(status_code=404, detail="Triple not found")
@@ -123,23 +154,29 @@ def bulk_triple_operation(operation: BulkTripleOperation):
     results = {"added": 0, "deleted": 0, "errors": []}
     for triple in operation.add:
         try:
+            predicate = _validate_predicate(triple.predicate)
             neo4j_run("""
             MATCH (s:Resource {uri: $subject})
             MATCH (o:Resource {uri: $object})
             CALL apoc.create.relationship(s, $predicate, {}, o) YIELD rel
             RETURN rel
-            """, subject=triple.subject, predicate=triple.predicate, object=triple.object)
+            """, subject=triple.subject, predicate=predicate, object=triple.object)
             results["added"] += 1
+        except HTTPException as he:
+            results["errors"].append(f"Add error: {he.detail}")
         except Exception as e:
             results["errors"].append(f"Add error: {str(e)}")
     for triple in operation.delete:
         try:
+            predicate = _validate_predicate(triple.predicate)
             neo4j_run("""
             MATCH (s:Resource {uri: $subject})-[r]->(o:Resource {uri: $object})
             WHERE type(r) = $predicate
             DELETE r
-            """, subject=triple.subject, predicate=triple.predicate, object=triple.object)
+            """, subject=triple.subject, predicate=predicate, object=triple.object)
             results["deleted"] += 1
+        except HTTPException as he:
+            results["errors"].append(f"Delete error: {he.detail}")
         except Exception as e:
             results["errors"].append(f"Delete error: {str(e)}")
     return results

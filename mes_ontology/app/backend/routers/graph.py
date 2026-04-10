@@ -20,6 +20,7 @@ def graph_elements(limit: int = Query(100, ge=1, le=1000)):
                labels(n) AS sTypes,
                coalesce(n.`rdfs__label`, n.name, head(labels(n))) AS sLabel,
                type(r) AS rel,
+               id(r) AS rid,
                id(m) AS tid,
                labels(m) AS tTypes,
                coalesce(m.`rdfs__label`, m.name, head(labels(m))) AS tLabel
@@ -33,7 +34,13 @@ def graph_elements(limit: int = Query(100, ge=1, le=1000)):
             sid, tid = f"n{row['sid']}", f"n{row['tid']}"
             nodes[sid] = {"data": {"id": sid, "label": row["sLabel"] or "node", "types": row.get("sTypes", [])}}
             nodes[tid] = {"data": {"id": tid, "label": row["tLabel"] or "node", "types": row.get("tTypes", [])}}
-            edges.append({"data": {"id": f"{sid}->{tid}:{row['rel']}", "source": sid, "target": tid, "label": row["rel"]}})
+            # 관계 ID(rid)를 키에 포함시켜 동일 (s,t,rel) 다중 엣지에서도 충돌 없음
+            edges.append({"data": {
+                "id": f"e{row['rid']}",
+                "source": sid,
+                "target": tid,
+                "label": row["rel"],
+            }})
         return {"elements": list(nodes.values()) + edges}
     except HTTPException:
         raise

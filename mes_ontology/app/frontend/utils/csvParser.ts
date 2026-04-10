@@ -5,6 +5,10 @@ export interface ParsedCsvResult {
   features: number[][];
   target: number[];
   profile: DataProfile;
+  /** 원본 행 수가 MAX_ROWS를 초과해 잘렸는지 여부 (UI 안내용) */
+  truncated: boolean;
+  /** 실제 사용된 행 수 */
+  usedRows: number;
 }
 
 /** 파싱 성공/실패 + 실패 시 사유 (UI 안내용) */
@@ -13,6 +17,44 @@ export type ParseCsvForAutomlResult =
   | { ok: false; error: string };
 
 const MAX_ROWS = 5000;
+/** 업로드 파일 크기 상한 (50MB) — 브라우저 메모리 보호 */
+const MAX_FILE_BYTES = 50 * 1024 * 1024;
+
+/**
+ * RFC 4180 스타일 CSV 한 줄 파서.
+ * 따옴표 안의 구분자·줄바꿈·이스케이프된 따옴표("")를 처리합니다.
+ * (PapaParse 의존성 없이 가벼운 자체 구현)
+ */
+function parseCsvText(text: string, delimiter: string): string[][] {
+  const rows: string[][] = [];
+  let field = '';
+  let row: string[] = [];
+  let inQuotes = false;
+  let i = 0;
+  const len = text.length;
+
+  while (i < len) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+        inQuotes = false; i++; continue;
+      }
+      field += ch; i++; continue;
+    }
+    if (ch === '"') { inQuotes = true; i++; continue; }
+    if (ch === delimiter) { row.push(field); field = ''; i++; continue; }
+    if (ch === '\r') { i++; continue; }
+    if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; i++; continue; }
+    field += ch; i++;
+  }
+  // 마지막 필드/행 flush
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
 
 /**
  * CSV 파일을 읽어 AutoML용 features(2D), target(1D)과 DataProfile을 반환합니다.
@@ -21,21 +63,38 @@ const MAX_ROWS = 5000;
  * 실패 시 { ok: false, error }로 사유를 반환해 UI에서 안내할 수 있게 합니다.
  */
 export async function parseCsvForAutoml(file: File): Promise<ParseCsvForAutomlResult> {
+  if (file.size > MAX_FILE_BYTES) {
+    return { ok: false, error: `파일이 너무 큽니다 (최대 ${Math.round(MAX_FILE_BYTES / 1024 / 1024)}MB).` };
+  }
   const raw = await file.text();
   // BOM 제거
   const text = raw.replace(/^\uFEFF/, '');
-  const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
-  if (lines.length < 2) return { ok: false, error: '파일이 비어 있거나 헤더 외 데이터 행이 없습니다.' };
+  if (text.trim().length === 0) {
+    return { ok: false, error: '파일이 비어 있습니다.' };
+  }
 
-  const delimiter = lines[0].includes(';') ? ';' : ',';
-  const stripQuotes = (s: string) => s.replace(/^"|"$/g, '');
-  const headers = lines[0].split(delimiter).map((h) => stripQuotes(h.trim()));
-  if (headers.length < 2) return { ok: false, error: '헤더(컬럼)가 2개 이상이어야 합니다. 마지막 컬럼은 타깃(레이블)으로 사용됩니다.' };
+  // 헤더 한 줄을 먼저 추출해서 구분자 추정 (`;`이 더 많으면 세미콜론, 그 외 콤마)
+  const firstLineEnd = text.search(/\r?\n/);
+  const headerLine = firstLineEnd >= 0 ? text.slice(0, firstLineEnd) : text;
+  const semiCount = (headerLine.match(/;/g) || []).length;
+  const commaCount = (headerLine.match(/,/g) || []).length;
+  const delimiter = semiCount > commaCount ? ';' : ',';
 
-  // 1단계: 전체 행을 문자열로 파싱
+  const allRows = parseCsvText(text, delimiter).filter((r) => r.some((c) => c.trim().length > 0));
+  if (allRows.length < 2) {
+    return { ok: false, error: '파일이 비어 있거나 헤더 외 데이터 행이 없습니다.' };
+  }
+
+  const headers = allRows[0].map((h) => h.trim());
+  if (headers.length < 2) {
+    return { ok: false, error: '헤더(컬럼)가 2개 이상이어야 합니다. 마지막 컬럼은 타깃(레이블)으로 사용됩니다.' };
+  }
+
+  const totalDataRows = allRows.length - 1;
+  const truncated = totalDataRows > MAX_ROWS;
   const rawRows: string[][] = [];
-  for (let i = 1; i < lines.length && rawRows.length < MAX_ROWS; i++) {
-    const cells = lines[i].split(delimiter).map((c) => stripQuotes(c.trim()));
+  for (let i = 1; i < allRows.length && rawRows.length < MAX_ROWS; i++) {
+    const cells = allRows[i].map((c) => c.trim());
     if (cells.length === headers.length) rawRows.push(cells);
   }
   if (rawRows.length < 2) return { ok: false, error: '유효한 데이터 행이 2행 미만입니다. 컬럼 수가 헤더와 일치하는지 확인해 주세요.' };
@@ -102,5 +161,5 @@ export async function parseCsvForAutoml(file: File): Promise<ParseCsvForAutomlRe
     dataTypes: Object.fromEntries(featureNames.map((f) => [f, 'Continuous'])),
   };
 
-  return { ok: true, data: { features, target, profile } };
+  return { ok: true, data: { features, target, profile, truncated, usedRows: features.length } };
 }

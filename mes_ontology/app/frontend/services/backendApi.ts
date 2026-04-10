@@ -30,32 +30,58 @@ export interface AutoMLFitResult {
   visualization_methods?: string[];
 }
 
+/**
+ * AutoML 호출 결과 — discriminated union.
+ * - ok: 성공 (data 포함)
+ * - no-config: VITE_API_URL 미설정 (호출 자체를 건너뜀, UI에서 경고 숨김)
+ * - http-error: 서버가 4xx/5xx 반환
+ * - network-error: fetch 자체 실패 (CORS, 미기동 등)
+ * - timeout: 요청이 제한 시간을 초과
+ */
 export type AutomlFitResponse =
   | { ok: true; data: AutoMLFitResult }
-  | { ok: false; error: string };
+  | { ok: false; kind: 'no-config' }
+  | { ok: false; kind: 'http-error'; status: number; error: string }
+  | { ok: false; kind: 'network-error'; error: string }
+  | { ok: false; kind: 'timeout'; error: string };
 
-/** `fetch` 예외 시 반환 메시지. UI에서 네트워크 실패 배너를 숨길 때 동일 문자열로 구분 */
+/** `fetch` 예외 시 표시 메시지. UI에서 동일 문자열로 분기 가능 */
 export const AUTOML_FETCH_FAILED_MESSAGE = '네트워크 오류 또는 서버에 연결할 수 없습니다.';
+export const AUTOML_TIMEOUT_MESSAGE = 'AutoML 서버 응답이 너무 오래 걸려 요청을 취소했습니다.';
+
+/** 기본 타임아웃: 60초 (AutoML CV가 무거울 수 있어 일반 API보다 길게 설정) */
+const DEFAULT_TIMEOUT_MS = 60_000;
 
 /**
  * 백엔드 AutoML /automl/fit 호출.
  * features: 2차원 배열, target: 1차원 배열.
- * baseUrl 미설정 시 ok: false, error 비어 있음. 실패 시 error 메시지 반환.
+ * VITE_API_URL 미설정 시 kind='no-config'를 반환합니다.
  */
 export async function automlFit(
   features: number[][],
   target: number[],
-  task: 'classification' | 'regression' = 'classification'
+  task: 'classification' | 'regression' = 'classification',
+  options?: { timeoutMs?: number; signal?: AbortSignal }
 ): Promise<AutomlFitResponse> {
   const baseUrl = getBaseUrl();
   if (!baseUrl) {
-    return { ok: false, error: '' };
+    return { ok: false, kind: 'no-config' };
   }
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // 외부 signal과 합성
+  if (options?.signal) {
+    if (options.signal.aborted) controller.abort();
+    else options.signal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+
   try {
     const res = await fetch(`${baseUrl.replace(/\/$/, '')}/automl/fit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ features, target, task, cv: 3 }),
+      signal: controller.signal,
     });
     if (!res.ok) {
       let detail = 'AutoML 서버 오류';
@@ -65,13 +91,18 @@ export async function automlFit(
       } catch {
         // ignore
       }
-      return { ok: false, error: detail };
+      return { ok: false, kind: 'http-error', status: res.status, error: detail };
     }
     const data = (await res.json()) as AutoMLFitResult;
     return { ok: true, data };
   } catch (e) {
-    // Failed to fetch: 백엔드 미기동, 잘못된 URL, CORS 차단, 혼합 콘텐츠 등
+    if ((e as Error)?.name === 'AbortError') {
+      console.warn('[automlFit] aborted (timeout):', e);
+      return { ok: false, kind: 'timeout', error: AUTOML_TIMEOUT_MESSAGE };
+    }
     console.warn('[automlFit] fetch failed:', e);
-    return { ok: false, error: AUTOML_FETCH_FAILED_MESSAGE };
+    return { ok: false, kind: 'network-error', error: AUTOML_FETCH_FAILED_MESSAGE };
+  } finally {
+    clearTimeout(timer);
   }
 }

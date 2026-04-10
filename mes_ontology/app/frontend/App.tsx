@@ -282,6 +282,32 @@ function applyTemplateToPreprocConfig(template: ResultTemplate, prev: PreprocCon
 const DEFAULT_PREPROCESSING_METHODS = ['StandardScaler', '결측치 중앙값 대체', '이상치 IQR 클리핑'];
 const DEFAULT_VISUALIZATION_METHODS = ['산점도', '상관관계 행렬', '히트맵'];
 
+/**
+ * 백엔드 AutoML이 반환하는 영문 detail 메시지를 사용자용 한국어 안내로 번역.
+ * 알려진 패턴이 아니면 null을 돌려줘서 원문 노출(영문) 대신 일반 안내로 폴백한다.
+ */
+function translateAutomlError(raw: string): string | null {
+  const msg = raw.trim();
+  if (/each class needs at least \d+ samples/i.test(msg)) {
+    return '각 클래스(타깃 라벨)별 샘플이 부족해 분류 모델을 학습할 수 없습니다. 클래스당 최소 2건 이상 필요합니다.';
+  }
+  if (/at least 2 distinct classes/i.test(msg)) {
+    return '타깃 컬럼에 서로 다른 클래스가 2개 이상 있어야 분류 분석이 가능합니다.';
+  }
+  if (/contains nan|contains inf|nan or inf/i.test(msg)) {
+    return '입력 데이터에 결측치(NaN) 또는 무한대 값이 포함되어 있어 모델 학습을 진행할 수 없습니다.';
+  }
+  if (/too many (samples|rows|features)|exceeds (maximum|limit)/i.test(msg)) {
+    return '입력 데이터 크기가 허용 범위를 초과했습니다. 행/열 수를 줄여 다시 시도해 주세요.';
+  }
+  if (/features and target.*length|length mismatch/i.test(msg)) {
+    return '피처와 타깃의 행 수가 일치하지 않습니다. 데이터를 확인해 주세요.';
+  }
+  // 알 수 없는 영문 메시지는 원문을 그대로 노출하지 않고 일반 안내로 대체
+  if (/^[\x00-\x7F]+$/.test(msg)) return null;
+  return msg;
+}
+
 const CHART_PALETTE = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316', '#84cc16'];
 
 /** 컬럼이 시계열(시간축)인지 헤더명·값 패턴으로 판단 */
@@ -996,7 +1022,7 @@ const App: React.FC = () => {
           preprocessing_methods: templatePreprocMethods ?? configuredMethods,
           visualization_methods: templateVizMethods ?? mockAutomlResult.visualization_methods,
         });
-        setAutomlFallbackReason('모델 도출 결과가 없어 시뮬레이션 결과를 표시합니다.');
+        setAutomlFallbackReason('모델 도출 결과가 없습니다.');
       }
     } else {
       await new Promise((r) => setTimeout(r, 1200));
@@ -1010,7 +1036,8 @@ const App: React.FC = () => {
         automlRes.error &&
         automlRes.error !== AUTOML_FETCH_FAILED_MESSAGE
       ) {
-        setAutomlFallbackReason(automlRes.error);
+        const translated = translateAutomlError(automlRes.error);
+        setAutomlFallbackReason(translated ?? '백엔드에서 모델 학습을 완료하지 못했습니다.');
       }
     }
     setCurrentStep(2);
@@ -1386,9 +1413,9 @@ const App: React.FC = () => {
     return densifyLineChartPoints(base, keys);
   }, [columnAnalysisData]);
 
-  /** 향상된 온톨로지 템플릿 추천: 산업 컨텍스트 + 데이터 타입 패턴 + ISA-95 경고 + 커버리지 포함 */
-  const { recommendations: uploadTemplateRecommendations, isa95Warning: uploadIsa95Warning } = useMemo(() => {
-    if (!dataPreview) return { recommendations: [], isa95Warning: null };
+  /** 데이터 신호 우선 템플릿 추천: 헤더 hint + 필수 항목 매칭 (산업은 동률 깨기) + 진단 정보 */
+  const { recommendations: uploadTemplateRecommendations, isa95Warning: uploadIsa95Warning, dataDiagnostics: uploadDataDiagnostics } = useMemo(() => {
+    if (!dataPreview) return { recommendations: [], isa95Warning: null, dataDiagnostics: null };
     return getEnhancedTemplateRecommendations(dataPreview.headers, dataPreview.rows, REFERENCE_TEMPLATES, industry, 3);
   }, [dataPreview, industry]);
 
@@ -1589,7 +1616,21 @@ const App: React.FC = () => {
               </div>
             </section>
 
-            {/* 하단: MES 분석 템플릿 추천 */}
+            {/* 하단: MES 분석 템플릿 추천 — 매칭 0개일 때 빈 안내 표시 */}
+            {dataPreview && uploadTemplateRecommendations.length === 0 && (
+              <section className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 flex items-start gap-3">
+                <Layers className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="text-xs font-semibold text-slate-600">매칭되는 추천 템플릿이 없습니다</p>
+                  <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
+                    업로드한 데이터의 컬럼명에서 MES 표준 키워드(예: temperature, vibration, lot, machine, timestamp)를 찾지 못했습니다. 컬럼명을 도메인 표준으로 변경하거나, 식별자/타임스탬프 컬럼을 추가한 뒤 다시 시도해 주세요.
+                  </p>
+                  {uploadDataDiagnostics && (
+                    <p className="text-[11px] text-slate-400 mt-2">{uploadDataDiagnostics.summary}</p>
+                  )}
+                </div>
+              </section>
+            )}
             {uploadTemplateRecommendations.length > 0 && (
               <section className="bg-white rounded-xl border border-indigo-100 shadow-sm overflow-hidden">
                 <div className="px-5 py-4 border-b border-slate-100">
@@ -1627,34 +1668,41 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
-                {/* 데이터 수준 안내 */}
+                {/* 데이터 진단 (타입 패턴) — 추천 점수와 분리된 정보 */}
+                {uploadDataDiagnostics && (
+                  <div className="px-5 py-2.5 border-b border-slate-100 bg-slate-50/60 flex items-center gap-2">
+                    <Layers className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                    <p className="text-[11px] text-slate-500 leading-relaxed">{uploadDataDiagnostics.summary}</p>
+                  </div>
+                )}
+
+                {/* ISA-95 데이터 수준 안내 */}
                 {uploadIsa95Warning && (
                   <div className="px-5 py-3 border-b border-amber-100 bg-amber-50/70 flex items-start gap-2">
                     <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
                     <div>
-                      <p className="text-xs font-semibold text-amber-700">데이터 수준 안내</p>
+                      <p className="text-xs font-semibold text-amber-700">데이터 수준 안내 (ISA-95)</p>
                       <p className="text-[11px] text-amber-600 mt-0.5 leading-relaxed">{uploadIsa95Warning}</p>
                     </div>
                   </div>
                 )}
 
                 {(() => {
-                  const maxScore = Math.max(...uploadTemplateRecommendations.map((r) => r.score), 0.001);
                   return (
                     <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-slate-100">
-                      {uploadTemplateRecommendations.map(({ template, score, matchedFunctionIds, coverageScore, coverageDetail }, idx) => {
+                      {uploadTemplateRecommendations.map(({ template, matchedFunctionIds, coverageDetail }, idx) => {
                         const relatedFns = template.recommendedFunctionIds
                           .map((fid) => MES_ONTOLOGY.find((f) => f.id === fid))
                           .filter(Boolean);
-                        const normalizedScore = Math.min(score / maxScore, 1);
-                        const suitabilityPct = Math.round((normalizedScore * 0.6 + coverageScore * 0.4) * 100);
-                        const suitabilityDots = suitabilityPct >= 65 ? 3 : suitabilityPct >= 40 ? 2 : 1;
-                        const suitabilityLabel = suitabilityPct >= 65 ? '적합' : suitabilityPct >= 40 ? '보통' : '참고';
-                        const suitabilityTextCls = suitabilityPct >= 65 ? 'text-indigo-600' : suitabilityPct >= 40 ? 'text-amber-600' : 'text-slate-500';
-                        const suitabilitySegCls = suitabilityPct >= 65 ? 'bg-indigo-500' : suitabilityPct >= 40 ? 'bg-amber-400' : 'bg-slate-400';
-                        const coveragePct = Math.round(coverageScore * 100);
-                        const coverageBarCls = coveragePct >= 75 ? 'bg-emerald-400' : coveragePct >= 50 ? 'bg-amber-400' : 'bg-rose-400';
-                        const coverageTextCls = coveragePct >= 75 ? 'text-emerald-600' : coveragePct >= 50 ? 'text-amber-600' : 'text-rose-600';
+                        // 적합도 = 필수 항목 매칭 수 (절대값 기반, 이전 버전 철학)
+                        const { matched, total, missing } = coverageDetail;
+                        const ratio = total > 0 ? matched / total : 0;
+                        const suitabilityDots = ratio >= 0.75 ? 3 : ratio >= 0.5 ? 2 : 1;
+                        const suitabilityLabel = ratio >= 0.75 ? '적합' : ratio >= 0.5 ? '보통' : '참고';
+                        const suitabilityTextCls = ratio >= 0.75 ? 'text-indigo-600' : ratio >= 0.5 ? 'text-amber-600' : 'text-slate-500';
+                        const suitabilitySegCls = ratio >= 0.75 ? 'bg-indigo-500' : ratio >= 0.5 ? 'bg-amber-400' : 'bg-slate-400';
+                        const coverageBarCls = ratio >= 0.75 ? 'bg-emerald-400' : ratio >= 0.5 ? 'bg-amber-400' : 'bg-rose-400';
+                        const coverageTextCls = ratio >= 0.75 ? 'text-emerald-600' : ratio >= 0.5 ? 'text-amber-600' : 'text-rose-600';
                         const isSelected = selectedTemplate?.id === template.id;
                         return (
                           <div
@@ -1732,34 +1780,34 @@ const App: React.FC = () => {
                               <p className="text-xs text-slate-500 leading-relaxed">{template.summary}</p>
                             )}
 
-                            {/* 데이터 유사도 */}
-                            {coverageDetail.total > 0 && (
+                            {/* 필수 항목 보유 (이전 버전의 절대값 표시 철학) */}
+                            {total > 0 && (
                               <div>
                                 <div className="flex items-center justify-between mb-1">
                                   <span className="flex items-center gap-1">
-                                    <span className="text-[10px] text-slate-500">데이터 유사도</span>
+                                    <span className="text-[10px] text-slate-500">필수 항목 보유</span>
                                     <span className="relative group inline-flex">
                                       <span className="w-3.5 h-3.5 rounded-full bg-slate-200 text-slate-500 text-[9px] font-bold flex items-center justify-center cursor-help leading-none select-none">?</span>
                                       <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-60 text-[10px] text-slate-600 bg-white border border-slate-200 rounded-md shadow-lg px-2.5 py-2 leading-relaxed z-20 hidden group-hover:block pointer-events-none whitespace-normal">
-                                        <span className="font-semibold text-slate-700 block mb-1">유사도 산출 기준</span>
-                                        <span className="block">① 컬럼명 키워드 매칭 — 센서·품질·이력 등 MES 관련 키워드 일치 수</span>
-                                        <span className="block">② 산업 컨텍스트 — 선택 산업의 주요 기능에 가중치 부여</span>
-                                        <span className="block">③ 데이터 타입 패턴 — 수치형·범주형·타임스탬프 비율 반영</span>
-                                        <span className="block">④ 핵심 항목 커버리지 — 기능별 필수 컬럼 보유 비율</span>
+                                        <span className="font-semibold text-slate-700 block mb-1">판정 기준</span>
+                                        <span className="block">이 템플릿의 핵심 함수가 요구하는 항목(예: 설비 ID, 타임스탬프, 측정값) 중 업로드한 데이터 컬럼에서 발견된 개수입니다.</span>
+                                        <span className="block mt-1">절대값(N/M)으로 표시되어 백분율보다 직관적입니다.</span>
                                       </span>
                                     </span>
                                   </span>
-                                  <span className={`text-[10px] font-semibold ${coverageTextCls}`}>{coveragePct}%</span>
+                                  <span className={`text-[10px] font-semibold ${coverageTextCls}`}>
+                                    {matched}/{total}개 보유
+                                  </span>
                                 </div>
                                 <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
                                   <div
                                     className={`h-full rounded-full ${coverageBarCls} transition-all`}
-                                    style={{ width: `${coveragePct}%` }}
+                                    style={{ width: `${(matched / total) * 100}%` }}
                                   />
                                 </div>
-                                {coverageDetail.missing.length > 0 && (
+                                {missing.length > 0 && (
                                   <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
-                                    보강하면 좋을 항목: {coverageDetail.missing.join(' · ')}
+                                    보강하면 좋을 항목: {missing.join(' · ')}
                                   </p>
                                 )}
                               </div>
@@ -3861,11 +3909,6 @@ const App: React.FC = () => {
                         </>
                       )}
 
-                      {automlFallbackReason && (
-                        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-4">
-                          {automlFallbackReason} 시뮬레이션 결과를 표시합니다.
-                        </p>
-                      )}
                       {!automlResult && analysisResult && !automlFallbackReason && (
                         <p className="text-sm text-slate-600">
                           데모 모드로 실행되었습니다. 백엔드 미연결 시 샘플 데이터로 분석되며, 분류 작업에는 <strong className="text-slate-800">RandomForest</strong>·<strong className="text-slate-800">XGBoost</strong> 등을 추천합니다.

@@ -3,25 +3,35 @@ Neo4j 연결 및 쿼리 실행. n10s 설정·온톨로지 로드 포함.
 """
 import os
 import glob
+import logging
 from fastapi import HTTPException
 from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable, AuthError, TransientError
 
 from config import NEO4J_URI, NEO4J_USER, NEO4J_PASS, ONTOLOGY_DIR
 
+logger = logging.getLogger("mes_ontology.db")
+
 driver = None
 
-try:
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
-    driver.verify_connectivity()
-    print(f"Neo4j connected successfully to {NEO4J_URI}")
-except Exception as e:
-    print(f"Warning: Neo4j connection failed: {e}")
-    driver = None
+if not NEO4J_PASS:
+    logger.warning(
+        "NEO4J_PASS is not set; Neo4j connection will be deferred until configured."
+    )
+else:
+    try:
+        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
+        driver.verify_connectivity()
+        logger.info("Neo4j connected successfully to %s", NEO4J_URI)
+    except Exception as e:
+        logger.warning("Neo4j connection failed: %s", e)
+        driver = None
 
 
 def _try_connect_neo4j():
     """Neo4j 연결 시도. 성공 시 driver 반환, 실패 시 None. (lazy reconnection용)"""
+    if not NEO4J_PASS:
+        return None
     try:
         d = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASS))
         d.verify_connectivity()
@@ -30,13 +40,24 @@ def _try_connect_neo4j():
         return None
 
 
+def close_driver():
+    """앱 종료 시 드라이버 정리."""
+    global driver
+    if driver is not None:
+        try:
+            driver.close()
+        except Exception as e:
+            logger.warning("Failed to close Neo4j driver: %s", e)
+        driver = None
+
+
 def neo4j_run(cypher: str, **params):
     """Neo4j 쿼리 실행. driver가 None이면 한 번 재연결 시도."""
     global driver
     if driver is None:
         driver = _try_connect_neo4j()
         if driver is not None:
-            print(f"Neo4j reconnected successfully to {NEO4J_URI}")
+            logger.info("Neo4j reconnected successfully to %s", NEO4J_URI)
         else:
             raise HTTPException(
                 status_code=503,
@@ -61,7 +82,7 @@ def ensure_n10s_config():
     try:
         result = neo4j_run("CALL n10s.graphconfig.show()")
         if result:
-            print("n10s already configured, skipping initialization")
+            logger.info("n10s already configured, skipping initialization")
             return
     except Exception:
         pass
@@ -71,14 +92,14 @@ def ensure_n10s_config():
           handleVocabUris: "SHORTEN", keepLangTag: false, typesToLabels: true
         })
         """)
-        print("n10s configuration initialized successfully")
+        logger.info("n10s configuration initialized successfully")
     except Exception as e:
         if "non-empty" not in str(e):
-            print(f"Warning: n10s configuration failed: {e}")
+            logger.warning("n10s configuration failed: %s", e)
     try:
         neo4j_run("CREATE CONSTRAINT n10s_uri IF NOT EXISTS FOR (r:Resource) REQUIRE r.uri IS UNIQUE")
     except Exception as e:
-        print(f"Warning: Constraint creation failed: {e}")
+        logger.warning("Constraint creation failed: %s", e)
 
 
 def load_ontology_files():
@@ -98,6 +119,6 @@ def load_ontology_files():
             YIELD terminationStatus, triplesLoaded
             RETURN terminationStatus AS status, triplesLoaded AS count
             """, ttl=ttl_content)
-            print(f"Loaded ontology file: {os.path.basename(ttl_file)}")
+            logger.info("Loaded ontology file: %s", os.path.basename(ttl_file))
         except Exception as e:
-            print(f"Error loading {ttl_file}: {e}")
+            logger.warning("Error loading %s: %s", ttl_file, e)
