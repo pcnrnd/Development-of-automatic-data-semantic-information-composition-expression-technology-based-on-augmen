@@ -9,7 +9,7 @@ import os
 
 NEO4J_URI = os.getenv("NEO4J_URI", "neo4j://127.0.0.1:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASS = os.getenv("NEO4J_PASS")  # 기본값 없음 — 미설정 시 연결 실패 의도
+NEO4J_PASS = os.getenv("NEO4J_PASS", "passwd")  # 기본값 없음 — 미설정 시 연결 실패 의도
 
 # 온톨로지 파일 로드 경로 (Docker 기본값)
 ONTOLOGY_DIR = os.getenv("ONTOLOGY_DIR", "/app/ontology")

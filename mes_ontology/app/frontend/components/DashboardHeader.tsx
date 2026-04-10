@@ -11,7 +11,7 @@ interface DashboardHeaderProps {
   onMenuClick: () => void;
   helpOpen: boolean;
   onHelpOpen: (open: boolean) => void;
-  /** 데스크톱 사이드바 접힘 여부 (패딩 정렬용) */
+  /** (하위호환) 기존 props. 패딩은 CSS 변수(--sidebar-w)로 자동 정렬합니다. */
   sidebarCollapsed?: boolean;
 }
 
@@ -19,9 +19,7 @@ const DashboardHeader: React.FC<DashboardHeaderProps> = ({ onMenuClick, helpOpen
   return (
     <>
       <header
-        className={`bg-slate-900 text-white py-4 px-4 sm:px-6 sticky top-0 z-20 flex items-center justify-between border-b border-slate-800 shadow-sm transition-[padding] duration-200 ${
-          sidebarCollapsed ? 'lg:pl-20' : 'lg:pl-[calc(14rem+1rem)] xl:pl-[calc(15rem+1rem)]'
-        }`}
+        className="bg-slate-900 text-white py-4 px-4 sm:px-6 sticky top-0 z-20 flex items-center justify-between border-b border-slate-800 shadow-sm transition-[padding] duration-200 lg:pl-[calc(var(--sidebar-w)+1rem)]"
       >
         <div className="flex items-center gap-3">
           <button

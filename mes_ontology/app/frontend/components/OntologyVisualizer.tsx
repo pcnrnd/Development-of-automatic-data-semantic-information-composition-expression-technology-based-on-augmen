@@ -54,6 +54,8 @@ function groupByCategory(ontology: MESFunction[]): Map<string, MESFunction[]> {
 
 interface OntologyVisualizerProps {
   embedded?: boolean;
+  /** 그래프 뷰 고정 높이(px). 온톨로지 탭처럼 큰 캔버스가 필요한 곳에서만 사용합니다. */
+  graphHeight?: number;
   /** 분석 결과로 매칭된 기능 ID 목록. 리스트/그래프에서 해당 항목을 강조 표시합니다. */
   highlightedFunctionIds?: string[];
   /** L3 결과 템플릿 목록. 그래프 뷰에서 템플릿 노드 및 Template→L2 엣지를 표시합니다. */
@@ -62,7 +64,7 @@ interface OntologyVisualizerProps {
   resultSummary?: ResultSummaryForPanel;
 }
 
-const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = false, highlightedFunctionIds, templates, resultSummary }) => {
+const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = false, graphHeight, highlightedFunctionIds, templates, resultSummary }) => {
   const [selectedNode, setSelectedNode] = useState<OntologySelectedNode | null>(null);
   const [viewMode, setViewMode] = useState<'graph' | 'list'>('graph');
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
@@ -75,36 +77,36 @@ const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = fals
   const toggleCategory = (category: string) => setExpanded((prev) => ({ ...prev, [category]: !prev[category] }));
 
   return (
-    <div className={embedded ? 'p-5 sm:p-6' : 'bg-white p-6 rounded-xl border border-slate-200 shadow-sm'}>
+    <div className={embedded ? 'p-4 sm:p-5 md:p-6' : 'bg-white p-4 sm:p-6 rounded-xl border border-slate-200 shadow-sm min-w-0'}>
       {!embedded && (
         <>
-          <div className="flex items-center gap-2 mb-2">
-            <Database className="w-6 h-6 text-indigo-600" />
-            <h2 className="text-xl font-bold text-slate-800">표준 MES 온톨로지</h2>
+          <div className="flex flex-wrap items-center gap-2 mb-2">
+            <Database className="w-6 h-6 text-indigo-600 shrink-0" />
+            <h2 className="text-lg sm:text-xl font-bold text-slate-800">표준 MES 온톨로지</h2>
             <OntologyGraphHelpTip />
           </div>
           <p className="text-sm text-slate-500 mb-4 leading-relaxed">
             {ONTOLOGY_SECTION_DESCRIPTION_KO}
           </p>
-          <div className="flex gap-1 p-1 rounded-lg bg-slate-100 w-fit mb-4">
+          <div className="flex gap-1 p-1 rounded-lg bg-slate-100 w-full sm:w-fit max-w-full mb-4">
             <button
               type="button"
               onClick={() => setViewMode('graph')}
-              className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              className={`flex flex-1 sm:flex-initial justify-center items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors min-h-[44px] sm:min-h-0 ${
                 viewMode === 'graph' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-600 hover:text-slate-800'
               }`}
             >
-              <GitBranch className="w-4 h-4" />
+              <GitBranch className="w-4 h-4 shrink-0" />
               그래프
             </button>
             <button
               type="button"
               onClick={() => setViewMode('list')}
-              className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+              className={`flex flex-1 sm:flex-initial justify-center items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors min-h-[44px] sm:min-h-0 ${
                 viewMode === 'list' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-600 hover:text-slate-800'
               }`}
             >
-              <List className="w-4 h-4" />
+              <List className="w-4 h-4 shrink-0" />
               목록
             </button>
           </div>
@@ -121,7 +123,8 @@ const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = fals
         <OntologyGraph
           onSelectNode={setSelectedNode}
           onSelectFunction={(fn) => setSelectedNode({ type: 'function', data: { fn } })}
-          height={embedded ? 320 : 420}
+          compact={embedded}
+          height={!embedded ? graphHeight : undefined}
           highlightedIds={highlightedFunctionIds}
           templates={templates}
         />

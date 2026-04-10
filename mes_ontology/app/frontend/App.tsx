@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   ResponsiveContainer,
   Radar,
@@ -130,6 +130,7 @@ function buildDataUsageSummary(profile: DataProfile | null, industry: IndustryTy
 }
 
 const SIDEBAR_COLLAPSED_KEY = 'mes-optimizer-sidebar-collapsed';
+const SIDEBAR_WIDTH_KEY = 'mes-optimizer-sidebar-width';
 
 /** 업로드 미리보기·컬럼 탐색 차트·증강 시뮬에 쓰는 데이터 행 수(헤더 제외). 통계 샘플(500행)과 비슷한 상한입니다. */
 const DATA_PREVIEW_MAX_ROWS = 400;
@@ -303,9 +304,71 @@ function translateAutomlError(raw: string): string | null {
   if (/features and target.*length|length mismatch/i.test(msg)) {
     return '피처와 타깃의 행 수가 일치하지 않습니다. 데이터를 확인해 주세요.';
   }
+  if (/same length and at least 2 samples|features must be 2d array/i.test(msg)) {
+    return '피처/타깃 형식이 올바르지 않거나 샘플 수가 부족합니다. 피처는 2차원, 타깃은 1차원이며 최소 2건 이상이어야 합니다.';
+  }
+  if (/must be numeric/i.test(msg)) {
+    return '피처/타깃에 숫자가 아닌 값이 포함되어 있어 학습할 수 없습니다.';
+  }
+  if (/must not contain nan or inf|nan or inf/i.test(msg)) {
+    return '피처/타깃에 결측치(NaN) 또는 무한대(Inf) 값이 포함되어 있습니다.';
+  }
   // 알 수 없는 영문 메시지는 원문을 그대로 노출하지 않고 일반 안내로 대체
   if (/^[\x00-\x7F]+$/.test(msg)) return null;
   return msg;
+}
+
+/**
+ * 업로드/미리보기 타깃 특성으로 AutoML task를 결정합니다.
+ * - 문자열 라벨 또는 저카디널리티 정수 타깃: classification
+ * - 그 외 연속형 수치 타깃: regression
+ */
+function decideAutomlTask(
+  fileClassCounts: Record<string, number> | null,
+  dataPreview: { headers: string[]; rows: string[][] } | null
+): 'classification' | 'regression' {
+  if (fileClassCounts !== null) return 'classification';
+  if (!dataPreview || dataPreview.rows.length === 0) return 'regression';
+  const lastIdx = dataPreview.headers.length - 1;
+  const targetValues = dataPreview.rows.map((r) => r[lastIdx]).filter((v) => v !== '');
+  if (targetValues.length === 0) return 'regression';
+  if (targetValues.some((v) => Number.isNaN(Number(v)))) return 'classification';
+  const unique = [...new Set(targetValues)];
+  return unique.length >= 2 && unique.length <= 20 && unique.every((v) => Number.isInteger(Number(v)))
+    ? 'classification'
+    : 'regression';
+}
+
+/** 전처리 탭에서 선택한 AutoML 학습 유형. auto는 타깃 패턴으로 분류/회귀를 자동 결정합니다. */
+type AutomlTaskMode = 'auto' | 'classification' | 'regression';
+
+/**
+ * UI에서 선택한 모드와 데이터 힌트로 최종 AutoML task를 반환합니다.
+ * auto일 때만 `decideAutomlTask`를 사용하고, 그 외에는 사용자 지정을 그대로 씁니다.
+ */
+function resolveAutomlTaskForAnalysis(
+  mode: AutomlTaskMode,
+  fileClassCounts: Record<string, number> | null,
+  dataPreview: { headers: string[]; rows: string[][] } | null
+): 'classification' | 'regression' {
+  if (mode === 'auto') return decideAutomlTask(fileClassCounts, dataPreview);
+  return mode;
+}
+
+/** 분류 task일 때 클래스 최소 조건(2개 클래스, 클래스당 2샘플)을 선검증합니다. */
+function validateClassificationTarget(target: number[]): string | null {
+  const counts = new Map<number, number>();
+  for (const value of target) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  if (counts.size < 2) {
+    return '타깃 컬럼에 서로 다른 클래스가 2개 이상 있어야 분류 분석이 가능합니다.';
+  }
+  const minCount = Math.min(...Array.from(counts.values()));
+  if (minCount < 2) {
+    return '각 클래스(타깃 라벨)별 샘플이 부족해 분류 모델을 학습할 수 없습니다. 클래스당 최소 2건 이상 필요합니다.';
+  }
+  return null;
 }
 
 const CHART_PALETTE = ['#6366f1', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4', '#f97316', '#84cc16'];
@@ -612,20 +675,55 @@ function dataPreviewHasTimeColumn(preview: { headers: string[]; rows: string[][]
 
 /** 전처리 UI: 회색 물음표 + title 툴팁(호버·포커스) */
 function PreprocHelpTip({ title: tip }: { title: string }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLSpanElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target as Node | null;
+      if (wrapRef.current && target && !wrapRef.current.contains(target)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('touchstart', onPointerDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('touchstart', onPointerDown);
+    };
+  }, [open]);
+
   return (
-    <button
-      type="button"
-      tabIndex={0}
-      className="inline-flex items-center justify-center rounded-full p-0.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-indigo-400 shrink-0"
-      title={tip}
-      aria-label={`도움말: ${tip}`}
-      onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      }}
-    >
-      <HelpCircle className="w-3 h-3" strokeWidth={2} aria-hidden />
-    </button>
+    <span ref={wrapRef} className="relative inline-flex shrink-0">
+      <button
+        type="button"
+        tabIndex={0}
+        className="inline-flex items-center justify-center rounded-full p-0.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-indigo-400 shrink-0"
+        aria-label={`도움말: ${tip}`}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setOpen((prev) => !prev);
+        }}
+      >
+        <HelpCircle className="w-3 h-3" strokeWidth={2} aria-hidden />
+      </button>
+      {open && (
+        <span
+          role="tooltip"
+          className="absolute z-40 left-1/2 -translate-x-1/2 top-[calc(100%+6px)] w-56 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[10px] text-slate-700 shadow-lg leading-snug"
+        >
+          {tip}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -645,7 +743,7 @@ function QualityChartEmptyState({
 }) {
   return (
     <div
-      className="h-[160px] flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50/50 text-center px-4"
+      className="min-h-[120px] h-[clamp(120px,20dvh,200px)] flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-200 bg-slate-50/50 text-center px-4"
       role="status"
       aria-live="polite"
     >
@@ -748,6 +846,16 @@ const App: React.FC = () => {
       return false;
     }
   });
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    try {
+      const raw = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+      const n = raw ? Number(raw) : NaN;
+      if (!Number.isFinite(n)) return 240;
+      return Math.max(200, Math.min(360, Math.round(n)));
+    } catch {
+      return 240;
+    }
+  });
   const [helpOpen, setHelpOpen] = useState(false);
   /** 데이터 준비: 업로드된 공정 데이터 파일 */
   const [uploadedProcessFile, setUploadedProcessFile] = useState<File | null>(null);
@@ -759,6 +867,14 @@ const App: React.FC = () => {
     setSidebarCollapsed(collapsed);
     try {
       localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(collapsed));
+    } catch {}
+  };
+
+  const handleSidebarWidthChange = (w: number) => {
+    const clamped = Math.max(200, Math.min(360, Math.round(w)));
+    setSidebarWidth(clamped);
+    try {
+      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(clamped));
     } catch {}
   };
 
@@ -870,6 +986,8 @@ const App: React.FC = () => {
   const [dataPreview, setDataPreview] = useState<{ headers: string[]; rows: string[][] } | null>(null);
   const [preprocSettingsExpanded, setPreprocSettingsExpanded] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<ResultTemplate | null>(null);
+  /** 전처리 탭: AutoML 분류/회귀 — 자동 또는 강제 지정 */
+  const [automlTaskMode, setAutomlTaskMode] = useState<AutomlTaskMode>('auto');
 
   useEffect(() => {
     setInsightOpenIndex(null);
@@ -896,6 +1014,7 @@ const App: React.FC = () => {
   useEffect(() => {
     setSelectedTemplate(null);
     setPreprocCompleted(false);
+    setAutomlTaskMode('auto');
     setPreprocConfig(() => {
       const next: PreprocConfig = { ...DEFAULT_PREPROC_CONFIG };
       if (dataPreview && dataPreview.headers.length >= 2 && dataPreviewHasTimeColumn(dataPreview)) {
@@ -1006,7 +1125,30 @@ const App: React.FC = () => {
       ? selectedTemplate.visualizationMethods
       : null;
 
-    const automlRes = await automlFit(features, target, 'classification');
+    const automlTask = resolveAutomlTaskForAnalysis(automlTaskMode, fileClassCounts, dataPreview);
+    if (automlTask === 'classification') {
+      const classificationValidationError = validateClassificationTarget(target);
+      if (classificationValidationError) {
+        await new Promise((r) => setTimeout(r, 1200));
+        setAutomlResult({
+          ...mockAutomlResult,
+          preprocessing_methods: templatePreprocMethods ?? configuredMethods,
+          visualization_methods: templateVizMethods ?? mockAutomlResult.visualization_methods,
+        });
+        setAutomlFallbackReason(classificationValidationError);
+        setCurrentStep(2);
+        const result = await analysisService.analyzeDataAndMatch(industry, profile, MES_ONTOLOGY);
+        if (result) {
+          setAnalysisResult(result);
+          setCurrentStep(TOTAL_STEPS);
+          setCurrentNav('result');
+        }
+        setIsProcessing(false);
+        return;
+      }
+    }
+
+    const automlRes = await automlFit(features, target, automlTask);
     const configuredMethods = preprocCompleted ? preprocMethodsFromConfig(preprocConfig) : DEFAULT_PREPROCESSING_METHODS;
     if (automlRes.ok) {
       const data = automlRes.data;
@@ -1063,18 +1205,11 @@ const App: React.FC = () => {
     });
   }, [analysisResult]);
 
-  // 분류/회귀 판단: fileClassCounts(전체 파일 집계)가 있으면 그것 기준, 없으면 미리보기 샘플로 보조 판단
-  const isClassificationTask = useMemo(() => {
-    if (fileClassCounts !== null) return true;
-    if (!dataPreview || dataPreview.rows.length === 0) return false;
-    const lastIdx = dataPreview.headers.length - 1;
-    const targetValues = dataPreview.rows.map((r) => r[lastIdx]).filter((v) => v !== '');
-    if (targetValues.length === 0) return false;
-    if (targetValues.some((v) => Number.isNaN(Number(v)))) return true;
-    // 숫자형 레이블: 정수 + 고유값 ≤ 20 이면 분류로 간주
-    const unique = [...new Set(targetValues)];
-    return unique.length >= 2 && unique.length <= 20 && unique.every((v) => Number.isInteger(Number(v)));
-  }, [dataPreview, fileClassCounts]);
+  // 분류/회귀: 전처리 탭 AutoML 모드(자동/강제)와 동일 기준 — 컬럼 탐색·SMOTE 안내와 맞춤
+  const isClassificationTask = useMemo(
+    () => resolveAutomlTaskForAnalysis(automlTaskMode, fileClassCounts, dataPreview) === 'classification',
+    [automlTaskMode, dataPreview, fileClassCounts]
+  );
 
   const preprocChartData = useMemo(() => {
     // dataProfile이 없으면(파일 미업로드 상태) 의미없는 수치를 보여주지 않음
@@ -1418,6 +1553,15 @@ const App: React.FC = () => {
     if (!dataPreview) return { recommendations: [], isa95Warning: null, dataDiagnostics: null };
     return getEnhancedTemplateRecommendations(dataPreview.headers, dataPreview.rows, REFERENCE_TEMPLATES, industry, 3);
   }, [dataPreview, industry]);
+  const dataGraphTemplates = useMemo(() => REFERENCE_TEMPLATES, []);
+  const dataGraphRecommendedTemplateIds = useMemo(
+    () => new Set(uploadTemplateRecommendations.map((r) => r.template.id)),
+    [uploadTemplateRecommendations]
+  );
+  const dataGraphHighlightedFunctionIds = useMemo(
+    () => Array.from(new Set(uploadTemplateRecommendations.flatMap((r) => r.matchedFunctionIds))),
+    [uploadTemplateRecommendations]
+  );
 
   // 템플릿 선택 변경 시, 전처리 설정을 자동 반영합니다.
   useEffect(() => {
@@ -1436,13 +1580,18 @@ const App: React.FC = () => {
     : (selectedTemplate.visualizationMethods ?? []).some((v) => v.includes('히트맵') || v.includes('상관관계') || v.includes('상관'));
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50">
+    <div
+      className="min-h-screen flex flex-col bg-slate-50"
+      style={{ ['--sidebar-w' as never]: `${sidebarCollapsed ? 64 : sidebarWidth}px` }}
+    >
       <AppSidebar
         currentNav={currentNav}
         onNavChange={setCurrentNav}
         onHelpOpen={() => setHelpOpen(true)}
         collapsed={sidebarCollapsed}
         onCollapsedChange={handleCollapsedChange}
+        width={sidebarWidth}
+        onWidthChange={handleSidebarWidthChange}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />
@@ -1469,10 +1618,11 @@ const App: React.FC = () => {
         </div>
       )}
 
-      <main className={`flex-1 transition-[padding] duration-200 ${sidebarCollapsed ? 'lg:pl-16' : 'lg:pl-56 xl:pl-60'}`}>
+      <main className="flex-1 min-w-0 w-full transition-[padding] duration-200 lg:pl-[var(--sidebar-w)]">
         {currentNav === 'ontology' && (
-          <div key="ontology" className="p-4 sm:p-6 lg:p-8">
+          <div key="ontology" className="p-4 sm:p-6 lg:p-8 min-w-0">
             <OntologyVisualizer
+              graphHeight={700}
               highlightedFunctionIds={analysisResult?.matches.map((m) => m.functionId)}
               templates={[
                 ...REFERENCE_TEMPLATES,
@@ -1521,7 +1671,7 @@ const App: React.FC = () => {
 
         {/* 1. 데이터 준비 */}
         {currentNav === 'data' && (
-          <div key="data" className="p-4 sm:p-6 lg:p-8">
+          <div key="data" className="p-4 sm:p-6 lg:p-8 min-w-0">
             <h1 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
               <Upload className="w-5 h-5 text-indigo-600" />
               데이터 준비
@@ -1631,8 +1781,8 @@ const App: React.FC = () => {
                 </div>
               </section>
             )}
-            {uploadTemplateRecommendations.length > 0 && (
-              <section className="bg-white rounded-xl border border-indigo-100 shadow-sm overflow-hidden">
+            <section className="bg-white rounded-xl border border-indigo-100 shadow-sm overflow-hidden">
+              {uploadTemplateRecommendations.length > 0 && (
                 <div className="px-5 py-4 border-b border-slate-100">
                   <div className="flex items-center gap-2 mb-3">
                     <Layers className="w-4 h-4 text-indigo-600 shrink-0" />
@@ -1667,17 +1817,18 @@ const App: React.FC = () => {
                     <span className="ml-1 text-slate-400">· 산업 선택 변경 시 자동 재계산</span>
                   </div>
                 </div>
+              )}
 
-                {/* 데이터 진단 (타입 패턴) — 추천 점수와 분리된 정보 */}
-                {uploadDataDiagnostics && (
+              {/* 데이터 진단 (타입 패턴) — 추천 점수와 분리된 정보 */}
+              {uploadTemplateRecommendations.length > 0 && uploadDataDiagnostics && (
                   <div className="px-5 py-2.5 border-b border-slate-100 bg-slate-50/60 flex items-center gap-2">
                     <Layers className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                     <p className="text-[11px] text-slate-500 leading-relaxed">{uploadDataDiagnostics.summary}</p>
                   </div>
-                )}
+              )}
 
-                {/* ISA-95 데이터 수준 안내 */}
-                {uploadIsa95Warning && (
+              {/* ISA-95 데이터 수준 안내 */}
+              {uploadTemplateRecommendations.length > 0 && uploadIsa95Warning && (
                   <div className="px-5 py-3 border-b border-amber-100 bg-amber-50/70 flex items-start gap-2">
                     <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
                     <div>
@@ -1685,9 +1836,9 @@ const App: React.FC = () => {
                       <p className="text-[11px] text-amber-600 mt-0.5 leading-relaxed">{uploadIsa95Warning}</p>
                     </div>
                   </div>
-                )}
+              )}
 
-                {(() => {
+              {uploadTemplateRecommendations.length > 0 && (() => {
                   return (
                     <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-slate-100">
                       {uploadTemplateRecommendations.map(({ template, matchedFunctionIds, coverageDetail }, idx) => {
@@ -1859,9 +2010,9 @@ const App: React.FC = () => {
                       })}
                     </div>
                   );
-                })()}
+              })()}
 
-                {selectedTemplate && (
+              {uploadTemplateRecommendations.length > 0 && selectedTemplate && (
                   <div className="px-5 py-3 bg-indigo-50/30 border-t border-indigo-100 flex items-center justify-between gap-3">
                     <p className="text-[11px] text-indigo-700 font-semibold">
                       선택 템플릿: {selectedTemplate.name} (전처리 &amp; 증강 화면에 즉시 반영됨)
@@ -1875,11 +2026,12 @@ const App: React.FC = () => {
                       전처리 &amp; 증강으로 이동 →
                     </button>
                   </div>
-                )}
+              )}
 
                 <div className="px-5 py-3 bg-slate-50 border-t border-slate-100">
                   <p className="text-[10px] text-slate-400">
-                    전체 분석 템플릿 목록은 <button type="button" onClick={() => setCurrentNav('ontology')} className="text-indigo-600 font-semibold hover:underline">표준 MES 온톨로지</button> 탭에서 확인하세요.
+                    전체 템플릿은 기본 표시되며, 업로드 데이터와 매칭된 추천 템플릿은 강조됩니다. 전체 카탈로그는{' '}
+                    <button type="button" onClick={() => setCurrentNav('ontology')} className="text-indigo-600 font-semibold hover:underline">표준 MES 온톨로지</button> 탭에서도 확인할 수 있습니다.
                   </p>
                 </div>
 
@@ -1891,26 +2043,23 @@ const App: React.FC = () => {
                       <span className="text-sm font-bold text-slate-800 align-middle">분석 구조 맵</span>
                       <OntologyGraphHelpTip className="ml-1 align-middle" />
                       <span className="ml-2 text-[11px] text-slate-500">
-                        데이터와 연결된 분석 기능(파란 테두리)과 추천 템플릿(보라 테두리)을 그래프로 확인합니다.
+                        전체 템플릿을 기본으로 보여주고, 데이터와 연결된 분석 기능과 추천 템플릿을 강조해 보여줍니다.
                       </span>
                     </div>
                   </div>
-                  <div className="px-5 pb-5">
+                  <div className="px-3 sm:px-5 pb-4 sm:pb-5 min-w-0">
                     <OntologyGraph
-                      height={480}
                       onSelectNode={setStructureMapSelectedNode}
-                      highlightedIds={
-                        Array.from(new Set(uploadTemplateRecommendations.flatMap((r) => r.matchedFunctionIds)))
-                      }
-                      templates={uploadTemplateRecommendations.map((r) => r.template)}
+                      highlightedIds={dataGraphHighlightedFunctionIds}
+                      templates={dataGraphTemplates}
+                      recommendedTemplateIds={dataGraphRecommendedTemplateIds}
                     />
                     <p className="mt-2 text-[11px] text-slate-500">
                       그래프에서 노드를 클릭하면 오른쪽에 상세 정보 패널이 열립니다.
                     </p>
                   </div>
                 </div>
-              </section>
-            )}
+            </section>
 
             {/* 분석 구조 맵 노드 클릭 시 표시되는 우측 상세 패널 */}
             <OntologyNodeDetailPanel
@@ -1931,7 +2080,7 @@ const App: React.FC = () => {
 
         {/* 1.5 전처리 & 증강 */}
         {currentNav === 'preprocess' && (
-          <div key="preprocess" className="p-4 sm:p-6 lg:p-8">
+          <div key="preprocess" className="p-4 sm:p-6 lg:p-8 min-w-0">
             <h1 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
               <SlidersHorizontal className="w-5 h-5 text-indigo-600" />
               전처리 &amp; 증강
@@ -2037,6 +2186,19 @@ const App: React.FC = () => {
                   </select>
                   <PreprocHelpTip title="특성 단위를 맞춥니다. Standard는 평균0·분산1, MinMax는 구간 정규화, Robust는 중앙값·IQR 기반으로 이상치에 덜 민감합니다." />
                 </div>
+                <div className="flex items-center gap-0.5 shrink-0">
+                  <select
+                    value={automlTaskMode}
+                    onChange={(e) => setAutomlTaskMode(e.target.value as AutomlTaskMode)}
+                    className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer max-w-[11rem]"
+                    aria-label="AutoML 학습 유형"
+                  >
+                    <option value="auto">AutoML: 자동</option>
+                    <option value="classification">AutoML: 분류</option>
+                    <option value="regression">AutoML: 회귀</option>
+                  </select>
+                  <PreprocHelpTip title="자동은 마지막 컬럼(타깃) 패턴으로 분류·회귀를 고릅니다. 시계열 연속값은 보통 회귀, 문자열·저카디널리티 정수 라벨은 분류입니다. 필요 시 여기서 강제 지정하세요." />
+                </div>
                 <div className="w-px h-4 bg-slate-200 mx-0.5 shrink-0" />
                 <AugmentationMethodToolbar
                   smoteEnabled={preprocConfig.smoteEnabled}
@@ -2089,7 +2251,7 @@ const App: React.FC = () => {
                       ] as { value: 'polynomial' | 'log' | 'timediff'; label: string; desc: string; help: string }[]).map((opt) => (
                         <label
                           key={opt.value}
-                          className={`flex flex-1 min-w-[140px] items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${
+                          className={`flex w-full sm:flex-1 sm:min-w-[140px] items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${
                             preprocConfig.featureEngineering.includes(opt.value)
                               ? 'border-indigo-300 bg-white shadow-sm'
                               : 'border-slate-200 bg-white/60 hover:bg-white hover:border-slate-300'
@@ -2642,10 +2804,17 @@ const App: React.FC = () => {
                     </div>
                   )}
 
-                  <div className="px-4 pt-3 pb-2">
+                  <div className="px-4 pt-3 pb-2 min-w-0">
                     {columnAnalysisData && !columnAnalysisData.selectedIsTimeSeries ? (
                       <>
-                        <ResponsiveContainer width="100%" height={columnAnalysisData.allSelectedCols.length > 1 ? 220 : 190}>
+                        <div
+                          className={
+                            columnAnalysisData.allSelectedCols.length > 1
+                              ? 'w-full min-h-[180px] h-[clamp(180px,34dvh,280px)]'
+                              : 'w-full min-h-[160px] h-[clamp(160px,30dvh,240px)]'
+                          }
+                        >
+                        <ResponsiveContainer width="100%" height="100%">
                           {(() => {
                             const hideAllSeries = columnAnalysisData.useLineChart && !showPrimarySeries && extraColumns.length === 0;
                             if (hideAllSeries) {
@@ -2834,13 +3003,14 @@ const App: React.FC = () => {
                             }
                           })()}
                         </ResponsiveContainer>
+                        </div>
                         <p className="text-[10px] text-slate-500 mt-2 text-center border-t border-slate-100 pt-2">
                           차트는 미리보기 <strong className="text-slate-600">{dataPreview.rows.length}행</strong>(최대 {DATA_PREVIEW_MAX_ROWS}행) 기준입니다. 라인 차트는 행이 적고 X가 시간일 때 구간 보간으로 곡선을 보강합니다. 전체 파일과 다를 수 있습니다.
                         </p>
                       </>
                     ) : (
                       <div className="flex flex-col gap-2">
-                        <div className="h-[190px] flex items-center justify-center text-[11px] text-slate-400 border border-dashed border-slate-200 rounded-lg bg-slate-50/50">
+                        <div className="min-h-[140px] h-[clamp(140px,24dvh,220px)] flex items-center justify-center text-[11px] text-slate-400 border border-dashed border-slate-200 rounded-lg bg-slate-50/50">
                           {columnAnalysisData?.selectedIsTimeSeries
                             ? '다른 수치형 컬럼을 선택하세요'
                             : '컬럼을 선택하세요'}
@@ -2939,7 +3109,8 @@ const App: React.FC = () => {
                           ? '막대 아래(진한색)는 클래스별 원본, 위쪽 보라 층은 모두 SMOTE 합성 건수입니다.'
                           : '현재 클래스 분포 · SMOTE 활성화 시 합성 레이어가 추가됩니다'}
                       </p>
-                      <ResponsiveContainer width="100%" height={168}>
+                      <div className="w-full min-h-[140px] h-[clamp(140px,22dvh,220px)]">
+                      <ResponsiveContainer width="100%" height="100%">
                         {augmentationChartType === 'bar' ? (
                           <BarChart data={preprocChartData.stackedData} barCategoryGap="32%">
                             <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
@@ -3029,6 +3200,7 @@ const App: React.FC = () => {
                           </AreaChart>
                         )}
                       </ResponsiveContainer>
+                      </div>
                     </>
                   ) : preprocChartData.timeseriesData ? (
                     <>
@@ -3037,7 +3209,7 @@ const App: React.FC = () => {
                         {preprocConfig.timeseriesStrategy === 'window' ? 'window slicing' : 'jitter'})
                       </p>
                       {augmentationChartType === 'bar' ? (
-                        <div className="w-full h-[176px] flex gap-4">
+                        <div className="w-full min-h-[160px] h-[clamp(160px,26dvh,220px)] flex flex-col sm:flex-row gap-4">
                           <div className="flex-1 min-w-0 flex flex-col min-h-0">
                             <p className="text-[9px] text-slate-500 text-center shrink-0">원본만</p>
                             <div className="flex-1 min-h-0 w-full">
@@ -3099,7 +3271,7 @@ const App: React.FC = () => {
                           </div>
                         </div>
                       ) : augmentationChartType === 'ratio' ? (
-                        <div className="w-full h-[188px] grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="w-full min-h-0 grid grid-cols-1 md:grid-cols-2 gap-3 auto-rows-fr">
                           {(() => {
                             const timeseriesAdded = preprocChartData.timeseriesData?.[0]?.증강 ?? 0;
                             const smoteAdded = preprocChartData.smoteAdded;
@@ -3138,9 +3310,9 @@ const App: React.FC = () => {
                               .join(' · ');
                             return (
                               <>
-                                <div className="rounded-lg border border-slate-200 bg-slate-50/30 p-2">
+                                <div className="rounded-lg border border-slate-200 bg-slate-50/30 p-2 min-w-0">
                                   <p className="text-[10px] font-semibold text-slate-600 text-center">시계열 증강 비율</p>
-                                  <div className="w-full h-[132px]">
+                                  <div className="w-full min-h-[100px] h-[clamp(100px,18dvh,150px)] sm:h-[132px]">
                                     <ResponsiveContainer width="100%" height="100%">
                                       <PieChart>
                                         <Pie data={timeseriesRatioData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="56%" outerRadius="82%" paddingAngle={1} strokeWidth={0}>
@@ -3160,9 +3332,9 @@ const App: React.FC = () => {
                                     원본 {((preprocChartData.baseCount / totalTimeseries) * 100).toFixed(1)}% · 시계열 {((timeseriesAdded / totalTimeseries) * 100).toFixed(1)}%
                                   </p>
                                 </div>
-                                <div className="rounded-lg border border-slate-200 bg-slate-50/30 p-2">
+                                <div className="rounded-lg border border-slate-200 bg-slate-50/30 p-2 min-w-0">
                                   <p className="text-[10px] font-semibold text-slate-600 text-center">전체 데이터 증강 비율</p>
-                                  <div className="w-full h-[132px]">
+                                  <div className="w-full min-h-[100px] h-[clamp(100px,18dvh,150px)] sm:h-[132px]">
                                     <ResponsiveContainer width="100%" height="100%">
                                       <PieChart>
                                         <Pie data={overallRatioData} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="56%" outerRadius="82%" paddingAngle={1} strokeWidth={0}>
@@ -3187,8 +3359,9 @@ const App: React.FC = () => {
                           })()}
                         </div>
                       ) : (
-                        <div className="w-full flex flex-col gap-1.5">
-                          <ResponsiveContainer width="100%" height={220}>
+                        <div className="w-full flex flex-col gap-1.5 min-w-0">
+                          <div className="w-full min-h-[180px] h-[clamp(180px,30dvh,260px)]">
+                          <ResponsiveContainer width="100%" height="100%">
                             <ComposedChart
                               data={preprocChartData.columnTimeseriesWave?.data ?? []}
                               margin={{ top: 8, right: 12, left: 0, bottom: 4 }}
@@ -3265,6 +3438,7 @@ const App: React.FC = () => {
                               />
                             </ComposedChart>
                           </ResponsiveContainer>
+                          </div>
                           <p className="text-[9px] text-slate-400 text-center">
                             {preprocChartData.columnTimeseriesWave?.source === 'column_sample'
                               ? `Y축은 「${preprocChartData.augWaveColumnEffective}」 미리보기(최대 ${DATA_PREVIEW_MAX_ROWS}행) 기반 스플라인 추정에, 원본·증강 모두 시각용 미세 변동(리플·지터)을 더한 시뮬입니다. 실제 전체 시계열과 다릅니다.`
@@ -3274,7 +3448,7 @@ const App: React.FC = () => {
                       )}
                     </>
                   ) : (
-                    <div className="flex flex-col items-center justify-center h-[168px] text-center gap-1.5">
+                    <div className="flex flex-col items-center justify-center min-h-[140px] h-[clamp(140px,22dvh,200px)] text-center gap-1.5">
                       <Shuffle className="w-7 h-7 text-slate-200" />
                       <p className="text-[11px] font-semibold text-slate-400 mt-1">증강 비교 대상이 없습니다</p>
                       <p className="text-[10px] text-slate-400">분류 클래스 또는 시계열 컬럼이 감지되면 증강 전/후 비교가 표시됩니다.</p>
@@ -3338,7 +3512,8 @@ const App: React.FC = () => {
                         />
                       ) : (
                       <>
-                        <ResponsiveContainer width="100%" height={160}>
+                        <div className="w-full min-h-[120px] h-[clamp(120px,20dvh,200px)]">
+                        <ResponsiveContainer width="100%" height="100%">
                           <BarChart data={[preprocChartData.qualityMissing]} barCategoryGap="35%" barGap={3}>
                             <XAxis dataKey="name" tick={{ fontSize: 10 }} axisLine={false} tickLine={false} />
                             <YAxis
@@ -3359,6 +3534,7 @@ const App: React.FC = () => {
                             <Bar dataKey="after" name="after" fill="#86efac" radius={[3, 3, 0, 0]} />
                           </BarChart>
                         </ResponsiveContainer>
+                        </div>
                         <div className="flex items-center gap-3 mt-1 justify-center">
                           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-red-300 inline-block" /><span className="text-[10px] text-slate-500">전처리 전</span></span>
                           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-green-300 inline-block" /><span className="text-[10px] text-slate-500">전처리 후</span></span>
@@ -3386,36 +3562,38 @@ const App: React.FC = () => {
                           const afterPie = pieFromOutlierPct(a);
                           const pieColors = ['#fca5a5', '#cbd5e1'];
                           return (
-                            <div className="flex w-full h-[160px] items-stretch gap-2">
+                            <div className="flex flex-col sm:flex-row w-full min-h-[140px] h-[clamp(140px,26dvh,200px)] sm:h-[160px] items-stretch gap-2">
                               {([
                                 { label: '전처리 전', data: beforePie },
                                 { label: '전처리 후', data: afterPie },
                               ] as const).map(({ label, data }) => (
-                                <div key={label} className="flex-1 flex flex-col items-center min-w-0">
-                                  <ResponsiveContainer width="100%" height={132}>
-                                    <PieChart>
-                                      <Pie
-                                        data={data}
-                                        dataKey="value"
-                                        nameKey="name"
-                                        cx="50%"
-                                        cy="50%"
-                                        innerRadius="52%"
-                                        outerRadius="78%"
-                                        paddingAngle={1}
-                                        strokeWidth={0}
-                                      >
-                                        {data.map((_, i) => (
-                                          <Cell key={i} fill={pieColors[i]} />
-                                        ))}
-                                      </Pie>
-                                      <Tooltip
-                                        contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
-                                        formatter={(v: number, n: string) => [`${v}%`, n]}
-                                      />
-                                    </PieChart>
-                                  </ResponsiveContainer>
-                                  <span className="text-[9px] text-slate-500 -mt-1">{label}</span>
+                                <div key={label} className="flex-1 flex flex-col items-center min-w-0 min-h-0">
+                                  <div className="flex-1 min-h-0 w-full">
+                                    <ResponsiveContainer width="100%" height="100%">
+                                      <PieChart>
+                                        <Pie
+                                          data={data}
+                                          dataKey="value"
+                                          nameKey="name"
+                                          cx="50%"
+                                          cy="50%"
+                                          innerRadius="52%"
+                                          outerRadius="78%"
+                                          paddingAngle={1}
+                                          strokeWidth={0}
+                                        >
+                                          {data.map((_, i) => (
+                                            <Cell key={i} fill={pieColors[i]} />
+                                          ))}
+                                        </Pie>
+                                        <Tooltip
+                                          contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
+                                          formatter={(v: number, n: string) => [`${v}%`, n]}
+                                        />
+                                      </PieChart>
+                                    </ResponsiveContainer>
+                                  </div>
+                                  <span className="text-[9px] text-slate-500 shrink-0 pt-0.5">{label}</span>
                                 </div>
                               ))}
                             </div>
@@ -3697,7 +3875,7 @@ const App: React.FC = () => {
 
         {/* 2. 분석 실행 */}
         {currentNav === 'run' && (
-          <div key="run-view" className="p-4 sm:p-6 lg:p-8 max-w-2xl" data-view="run">
+          <div key="run-view" className="p-4 sm:p-6 lg:p-8 w-full max-w-2xl mx-auto min-w-0" data-view="run">
             <h1 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
               <PlayCircle className="w-6 h-6 text-indigo-600" />
               분석 실행
@@ -3778,7 +3956,7 @@ const App: React.FC = () => {
 
         {/* 3. 결과 */}
         {currentNav === 'result' && (
-          <div key="result" className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
+          <div key="result" className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6 min-w-0 w-full">
             {!analysisResult && !isProcessing && (
               <div className="bg-white border border-slate-200 rounded-xl p-12 sm:p-24 flex flex-col items-center text-center">
                 <div className="w-16 h-16 sm:w-20 sm:h-20 bg-slate-100 rounded-full flex items-center justify-center mb-4 sm:mb-6">
@@ -3847,7 +4025,7 @@ const App: React.FC = () => {
                           {/* 모델 점수 시각화 */}
                           <div className="mb-5">
                             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">모델별 점수</p>
-                            <div className="h-48 w-full">
+                            <div className="w-full min-h-[10rem] h-[clamp(10rem,28dvh,15rem)]">
                               <ResponsiveContainer width="100%" height="100%">
                                 <BarChart
                                   data={(automlResult.all_results ?? [{ model: automlResult.best_model, mean_score: automlResult.best_score }])
@@ -3983,8 +4161,8 @@ const App: React.FC = () => {
                           })}
                         </div>
 
-                        <div className="bg-slate-50 rounded-xl p-4 sm:p-6 flex flex-col items-center justify-center border border-slate-100">
-                          <div className="w-full h-56 sm:h-64">
+                        <div className="bg-slate-50 rounded-xl p-4 sm:p-6 flex flex-col items-center justify-center border border-slate-100 min-w-0">
+                          <div className="w-full min-h-[12rem] h-[clamp(12rem,32dvh,16rem)] sm:min-h-[14rem] sm:h-[clamp(14rem,34dvh,18rem)]">
                             <ResponsiveContainer width="100%" height="100%">
                               <RadarChart cx="50%" cy="50%" outerRadius="80%" data={radarData}>
                                 <PolarGrid stroke="#e2e8f0" />
@@ -4142,7 +4320,7 @@ const App: React.FC = () => {
         )}
       </main>
 
-      <footer className={`bg-white border-t border-slate-200 py-5 px-4 sm:px-6 text-center lg:text-left transition-[padding] duration-200 ${sidebarCollapsed ? 'lg:pl-20' : 'lg:pl-[14rem] xl:pl-[15rem]'}`}>
+      <footer className="bg-white border-t border-slate-200 py-5 px-4 sm:px-6 text-center lg:text-left transition-[padding] duration-200 lg:pl-[calc(var(--sidebar-w)+1rem)]">
         <p className="text-xs text-slate-400 font-medium tracking-tight">Smart MES Selection Platform</p>
       </footer>
 

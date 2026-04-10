@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo } from 'react';
+import { cn } from '@/lib/utils';
 import {
   ReactFlow,
   Controls,
@@ -81,11 +82,16 @@ function groupByCategory(ontology: MESFunction[]): Map<string, MESFunction[]> {
   return map;
 }
 
-/** L3 템플릿 시각 구분: 참조 카탈로그 / 매칭 L2와 연결 / 이번 분석 결과(결과 화면 전용 id) */
-type TemplateVariant = 'reference' | 'matchLinked' | 'analysisResult';
+/** L3 템플릿 시각 구분: 참조 카탈로그 / 추천 / 매칭 L2와 연결 / 이번 분석 결과(결과 화면 전용 id) */
+type TemplateVariant = 'reference' | 'matchLinked' | 'recommended' | 'analysisResult';
 
-function getTemplateVariant(tpl: ResultTemplate, highlightedIdSet: Set<string> | null): TemplateVariant {
+function getTemplateVariant(
+  tpl: ResultTemplate,
+  highlightedIdSet: Set<string> | null,
+  recommendedTemplateIdSet: Set<string> | null
+): TemplateVariant {
   if (tpl.id === 'result-current') return 'analysisResult';
+  if (recommendedTemplateIdSet?.has(tpl.id)) return 'recommended';
   if (highlightedIdSet && tpl.recommendedFunctionIds.some((fid) => highlightedIdSet.has(fid))) return 'matchLinked';
   return 'reference';
 }
@@ -124,8 +130,8 @@ function RootNode({ data }: NodeProps<{ label: string }>) {
     <div className="relative w-20 h-20 rounded-full bg-gradient-to-br from-slate-800 to-slate-700 text-white shadow-xl shadow-slate-900/20 ring-2 ring-slate-600/50 flex flex-col items-center justify-center cursor-pointer">
       <Handle type="source" position={Position.Bottom} className="!w-0 !h-0 !min-w-0 !min-h-0 !border-0 !opacity-0" />
       <Database className="w-5 h-5 text-indigo-300 mb-0.5 shrink-0" />
-      <span className="font-bold text-xs leading-tight px-0.5 text-center tracking-tight">{data.label}</span>
-      <span className="absolute -top-1 -right-1 text-[9px] font-semibold text-slate-400 bg-slate-700/80 rounded px-1">L0</span>
+      <span className="font-bold text-[13px] leading-tight px-0.5 text-center tracking-tight">{data.label}</span>
+      <span className="absolute -top-1 -right-1 text-[10px] font-semibold text-slate-400 bg-slate-700/80 rounded px-1">L0</span>
     </div>
   );
 }
@@ -139,9 +145,9 @@ function CategoryNode({ data }: NodeProps<{ label: string; category: string; sho
     <div className="relative w-[4.5rem] h-[4.5rem] rounded-full bg-white border-2 border-slate-300 shadow-md shadow-slate-200 ring-1 ring-slate-200 flex flex-col items-center justify-center cursor-pointer" title={data.label}>
       <Handle type="target" position={target} className="!w-0 !h-0 !min-w-0 !min-h-0 !border-0 !opacity-0" />
       <Handle type="source" position={source} className="!w-0 !h-0 !min-w-0 !min-h-0 !border-0 !opacity-0" />
-      <span className="absolute -top-0.5 -right-0.5 text-[8px] font-semibold text-slate-400 bg-slate-100 rounded px-1">L1</span>
+      <span className="absolute -top-0.5 -right-0.5 text-[10px] font-semibold text-slate-400 bg-slate-100 rounded px-1">L1</span>
       <CategoryIcon category={data.category} size={20} />
-      <span className="font-bold text-slate-800 text-xs leading-tight mt-0.5 tracking-wide">{label}</span>
+      <span className="font-bold text-slate-800 text-[13px] leading-tight mt-0.5 tracking-wide">{label}</span>
     </div>
   );
 }
@@ -164,18 +170,18 @@ function FunctionNode({ data, selected }: NodeProps<{ label: string; id: string;
         }`}
       >
         <Handle type="target" position={target} className="!w-0 !h-0 !min-w-0 !min-h-0 !border-0 !opacity-0" />
-        <span className="absolute -top-0.5 right-0.5 text-[8px] font-medium text-slate-400">L2</span>
-        <span className={`font-mono text-[9px] font-semibold ${highlighted || selected ? 'text-indigo-400' : 'text-slate-400'}`}>{data.id}</span>
-        <span className={`text-[12px] font-bold leading-tight ${highlighted || selected ? 'text-indigo-700' : 'text-slate-800'}`}>{short}</span>
+        <span className="absolute -top-0.5 right-0.5 text-[10px] font-medium text-slate-400">L2</span>
+        <span className={`font-mono text-[10px] font-semibold ${highlighted || selected ? 'text-indigo-400' : 'text-slate-400'}`}>{data.id}</span>
+        <span className={`text-[13px] font-bold leading-tight ${highlighted || selected ? 'text-indigo-700' : 'text-slate-800'}`}>{short}</span>
       </div>
-      <span className={`text-[10px] font-semibold leading-tight whitespace-nowrap ${highlighted || selected ? 'text-indigo-600' : 'text-slate-600'}`}>{koLabel}</span>
+      <span className={`text-[11px] font-semibold leading-tight whitespace-nowrap ${highlighted || selected ? 'text-indigo-600' : 'text-slate-600'}`}>{koLabel}</span>
     </div>
   );
 }
 
 /**
- * L3 템플릿 노드: 참조(블루)·매칭 연계(인디고)·분석 결과(에메랄드)로 구분.
- * templateVariant는 buildGraphElements에서 highlightedIds·템플릿 id 기준으로 설정합니다.
+ * L3 템플릿 노드: 저채도 공통 바탕 + 상태별 테두리/배지 강도로 구분합니다.
+ * templateVariant는 buildGraphElements에서 추천 id·highlightedIds·템플릿 id 기준으로 설정합니다.
  */
 function TemplateNode({
   data,
@@ -186,22 +192,39 @@ function TemplateNode({
   templateVariant?: TemplateVariant;
 }>) {
   const v = data.templateVariant ?? 'reference';
+  const baseShell = 'bg-slate-100';
   const shell =
     v === 'analysisResult'
-      ? 'bg-emerald-200 border-emerald-500 ring-emerald-200/70'
-      : v === 'matchLinked'
-        ? 'bg-indigo-200 border-indigo-500 ring-indigo-200/70'
-        : 'bg-sky-200 border-sky-500 ring-sky-200/70';
+      ? `${baseShell} border-emerald-600 ring-emerald-200/70 border-[3px]`
+      : v === 'recommended'
+        ? `${baseShell} border-indigo-600 ring-indigo-200/70 border-[2.5px]`
+        : v === 'matchLinked'
+          ? `${baseShell} border-sky-600 ring-sky-200/70 border-2 border-dashed`
+          : `${baseShell} border-slate-400 ring-slate-200/70 border-2`;
   const icon =
-    v === 'analysisResult' ? 'text-emerald-900' : v === 'matchLinked' ? 'text-indigo-900' : 'text-sky-900';
+    v === 'analysisResult'
+      ? 'text-emerald-900'
+      : v === 'recommended'
+        ? 'text-indigo-900'
+        : v === 'matchLinked'
+          ? 'text-sky-900'
+          : 'text-slate-700';
   const badge =
     v === 'analysisResult'
       ? 'text-emerald-800 bg-emerald-100'
-      : v === 'matchLinked'
+      : v === 'recommended'
         ? 'text-indigo-800 bg-indigo-100'
-        : 'text-sky-800 bg-sky-100';
+        : v === 'matchLinked'
+          ? 'text-sky-800 bg-sky-100'
+          : 'text-slate-700 bg-slate-100';
   const caption =
-    v === 'analysisResult' ? 'text-emerald-800' : v === 'matchLinked' ? 'text-indigo-800' : 'text-sky-800';
+    v === 'analysisResult'
+      ? 'text-emerald-800'
+      : v === 'recommended'
+        ? 'text-indigo-800'
+        : v === 'matchLinked'
+          ? 'text-sky-800'
+          : 'text-slate-700';
   return (
     <div className="flex flex-col items-center gap-1" title={data.label}>
       <div
@@ -209,9 +232,9 @@ function TemplateNode({
       >
         <Handle type="source" position={Position.Bottom} className="!w-0 !h-0 !min-w-0 !min-h-0 !border-0 !opacity-0" />
         <LayoutTemplate className={`w-5 h-5 shrink-0 ${icon}`} />
-        <span className={`absolute -top-0.5 right-0.5 text-[8px] font-semibold rounded px-1 ${badge}`}>L3</span>
+        <span className={`absolute -top-0.5 right-0.5 text-[10px] font-semibold rounded px-1 ${badge}`}>L3</span>
       </div>
-      <span className={`text-[10px] font-semibold leading-tight whitespace-nowrap max-w-[90px] text-center ${caption}`}>{data.label}</span>
+      <span className={`text-[11px] font-semibold leading-tight whitespace-nowrap max-w-[100px] text-center ${caption}`}>{data.label}</span>
     </div>
   );
 }
@@ -227,7 +250,8 @@ const nodeTypes: NodeTypes = {
 function buildGraphElements(
   ontology: MESFunction[],
   highlightedIds?: string[],
-  templates?: ResultTemplate[]
+  templates?: ResultTemplate[],
+  recommendedTemplateIds?: ReadonlySet<string>
 ): { nodes: Node[]; edges: Edge[] } {
   const byCategory = groupByCategory(ontology);
   const nodes: Node[] = [];
@@ -343,6 +367,9 @@ function buildGraphElements(
   // L3 템플릿: 연결된 L2 Function 근처에 배치.
   const templateList = templates?.length ? templates : [];
   const highlightedIdSet = highlightedIds?.length ? new Set(highlightedIds) : null;
+  const recommendedTemplateIdSet = recommendedTemplateIds && recommendedTemplateIds.size > 0
+    ? new Set(recommendedTemplateIds)
+    : null;
   const byPrimaryFid = new Map<string, number[]>();
   templateList.forEach((tpl, tplIdx) => {
     const primaryFid = tpl.recommendedFunctionIds[0] ?? '';
@@ -377,7 +404,7 @@ function buildGraphElements(
       ty = cy + R3 * Math.sin(angle);
     }
 
-    const templateVariant = getTemplateVariant(tpl, highlightedIdSet);
+    const templateVariant = getTemplateVariant(tpl, highlightedIdSet, recommendedTemplateIdSet);
     nodes.push({
       id: tplId,
       type: 'template',
@@ -390,18 +417,28 @@ function buildGraphElements(
     tpl.recommendedFunctionIds.forEach((fid) => {
       const toHighlighted = highlightedIdSet?.has(fid) ?? false;
       const isAnalysisTpl = tpl.id === 'result-current';
-      const stroke = isAnalysisTpl ? '#059669' : toHighlighted ? '#6366f1' : '#38bdf8';
-      const strong = isAnalysisTpl || toHighlighted;
+      const isRecommendedTpl = recommendedTemplateIdSet?.has(tpl.id) ?? false;
+      const variant = isAnalysisTpl
+        ? 'analysisResult'
+        : isRecommendedTpl
+          ? 'recommended'
+          : toHighlighted
+            ? 'matchLinked'
+            : 'reference';
+      const edgeStyle =
+        variant === 'analysisResult'
+          ? { stroke: '#059669', strokeWidth: 2.8, strokeDasharray: undefined, opacity: 0.95 }
+          : variant === 'recommended'
+            ? { stroke: '#4f46e5', strokeWidth: 2.3, strokeDasharray: undefined, opacity: 0.9 }
+            : variant === 'matchLinked'
+              ? { stroke: '#0284c7', strokeWidth: 2.0, strokeDasharray: '4 3', opacity: 0.82 }
+              : { stroke: '#94a3b8', strokeWidth: 1.5, strokeDasharray: '2 4', opacity: 0.65 };
       edges.push({
         id: `e-${tplId}-${fid}`,
         source: tplId,
         target: fid,
         type: 'straight',
-        style: {
-          stroke,
-          strokeWidth: strong ? 2.5 : 1.75,
-          strokeDasharray: strong ? undefined : '5 3',
-        },
+        style: edgeStyle,
       });
     });
   });
@@ -412,21 +449,28 @@ function buildGraphElements(
 export interface OntologyGraphProps {
   onSelectNode?: (node: OntologySelectedNode) => void;
   onSelectFunction?: (fn: MESFunction) => void;
+  /** 고정 높이(px). 지정 시 레이아웃이 픽셀 고정됩니다. 미지정 시 뷰포트 기반 반응형 높이를 씁니다. */
   height?: number;
+  /** true면 임베드·접힌 영역용으로 상대적으로 낮은 높이 clamp를 사용합니다(height가 있으면 무시). */
+  compact?: boolean;
   highlightedIds?: string[];
   templates?: ResultTemplate[];
+  recommendedTemplateIds?: ReadonlySet<string>;
 }
 
 const OntologyGraph: React.FC<OntologyGraphProps> = ({
   onSelectNode,
   onSelectFunction,
-  height = 420,
+  height,
+  compact = false,
   highlightedIds,
   templates,
+  recommendedTemplateIds,
 }) => {
+  const fixedHeight = height != null;
   const { nodes: initialNodes, edges: initialEdges } = useMemo(
-    () => buildGraphElements(MES_ONTOLOGY, highlightedIds, templates),
-    [highlightedIds, templates]
+    () => buildGraphElements(MES_ONTOLOGY, highlightedIds, templates, recommendedTemplateIds),
+    [highlightedIds, templates, recommendedTemplateIds]
   );
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
@@ -468,26 +512,37 @@ const OntologyGraph: React.FC<OntologyGraphProps> = ({
   );
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-gradient-to-b from-slate-50 to-slate-100/80 overflow-hidden shadow-sm" style={{ height }}>
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-slate-200 bg-white/80">
-        <div>
+    <div
+      className={cn(
+        'rounded-xl border border-slate-200 bg-gradient-to-b from-slate-50 to-slate-100/80 overflow-hidden shadow-sm flex flex-col',
+        !fixedHeight &&
+          (compact
+            ? 'min-h-[220px] h-[clamp(240px,42dvh,400px)] sm:min-h-[260px] sm:h-[clamp(260px,44dvh,440px)] lg:h-[min(380px,48dvh)]'
+            : 'min-h-[260px] h-[clamp(280px,48dvh,520px)] sm:min-h-[300px] sm:h-[clamp(300px,50dvh,560px)] lg:h-[min(520px,60dvh)] xl:h-[min(620px,68dvh)]'),
+      )}
+      style={fixedHeight ? { height } : undefined}
+    >
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3 px-3 sm:px-4 py-2.5 border-b border-slate-200 bg-white/80 shrink-0">
+        <div className="min-w-0">
           <h3 className="text-sm font-semibold text-slate-800">Ontology Structure</h3>
-          <p className="text-[10px] text-slate-500 mt-0.5">
-            L0 Root · L1 Domain · L2 Function · L3 참조/매칭연계/분석결과 템플릿
+          <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">
+            L0 Root · L1 Domain · L2 Function · L3 참조/매칭연계/추천/분석결과 템플릿
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 justify-end max-w-[min(100%,520px)] text-[10px] text-slate-500">
-          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-slate-700" /> Root</span>
-          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-white border-2 border-slate-300" /> Domain</span>
-          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-white border-2 border-slate-300" /> Function</span>
-          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-indigo-50 border-2 border-indigo-500" /> 매칭 기능</span>
-          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-sky-200 border-2 border-sky-500" /> 참조 L3</span>
-          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-indigo-200 border-2 border-indigo-500" /> 매칭 연계 L3</span>
-          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-emerald-200 border-2 border-emerald-500" /> 분석 결과 L3</span>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[10px] text-slate-500 sm:justify-end w-full sm:w-auto sm:max-w-[min(100%,520px)]">
+          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-slate-700" /> Root</span>
+          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-white border-2 border-slate-300" /> Domain</span>
+          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-white border-2 border-slate-300" /> Function</span>
+          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-indigo-50 border-2 border-indigo-500" /> 매칭 기능</span>
+          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-slate-100 border-2 border-slate-400" /> 참조 L3</span>
+          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-slate-100 border-2 border-sky-600 border-dashed" /> 매칭 연계 L3</span>
+          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-slate-100 border-[2.5px] border-indigo-600" /> 추천 L3</span>
+          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-slate-100 border-[3px] border-emerald-600" /> 분석 결과 L3</span>
         </div>
       </div>
-      <div className="relative" style={{ height: height - 52 }}>
+      <div className="relative flex-1 min-h-0 w-full">
         <ReactFlow
+          className="h-full w-full"
           nodes={nodes}
           edges={edges}
           onNodesChange={onNodesChange}
