@@ -1,4 +1,4 @@
-# deploy/docker-compose.yaml 의 build context: mes_ontology 루트
+# compose.yaml 의 build context: mes_ontology 루트 (context: .)
 .git
 **/.git
 **/node_modules
