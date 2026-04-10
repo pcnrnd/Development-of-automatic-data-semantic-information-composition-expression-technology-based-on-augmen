@@ -21,3 +21,4 @@ catboost_info
 processed_images
 .claude
 .cursor
+.env
