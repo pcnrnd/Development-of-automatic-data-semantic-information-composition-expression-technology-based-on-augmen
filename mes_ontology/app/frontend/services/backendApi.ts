@@ -22,7 +22,8 @@ export function isBackendConfigured(): boolean {
   return getBaseUrl().length > 0;
 }
 
-const MOCK_AUTOML_RESULT: AutoMLFitResult = {
+/** 분류 시연용 목: 보조 지표는 F1(가중), 값은 0~1 스케일 */
+const MOCK_AUTOML_CLASSIFICATION: AutoMLFitResult = {
   best_model: 'HistGradientBoosting',
   best_score: 0.934,
   task: 'classification',
@@ -60,6 +61,54 @@ const MOCK_AUTOML_RESULT: AutoMLFitResult = {
   preprocessing_methods: ['StandardScaler', '이상치 IQR 클리핑', '결측치 대체(중앙값/평균)'],
   visualization_methods: ['산점도', '상관관계 히트맵', '클래스 분포', '혼동 행렬(학습 후)'],
 };
+
+/**
+ * 회귀 시연용 목: R²(mean_score)가 높을수록 MAE(|aux_score|)는 낮게(sklearn aux = 음의 MAE).
+ * 시각화·전처리 문구는 분류 목과 동일 계열을 유지해 데모 카드 구성만 맞춤.
+ */
+const MOCK_AUTOML_REGRESSION: AutoMLFitResult = {
+  best_model: 'HistGradientBoosting',
+  best_score: 0.934,
+  task: 'regression',
+  scoring: 'r2',
+  aux_scoring: 'neg_mean_absolute_error',
+  all_results: [
+    { model: 'HistGradientBoosting', mean_score: 0.934, std_score: 0.011, aux_score: -0.031,
+      preprocessing_methods: ['범주형 인코딩(OrdinalEncoder 권장)', 'max_iter·learning_rate 탐색', '피처 중요도 기반 불필요 피처 제거'],
+      visualization_methods: ['피처 중요도(상위 10)', '학습 곡선(반복별 손실)', '실측 vs 예측', '잔차 플롯'] },
+    { model: 'RandomForest', mean_score: 0.921, std_score: 0.015, aux_score: -0.048,
+      preprocessing_methods: ['이상치 IQR 클리핑(선택)', '범주형 인코딩(Label/Ordinal)', 'n_estimators·max_depth 탐색'],
+      visualization_methods: ['피처 중요도(상위 10)', '실측 vs 예측', '잔차 플롯', '시계열/피처별 추세'] },
+    { model: 'ExtraTrees', mean_score: 0.915, std_score: 0.014, aux_score: -0.055,
+      preprocessing_methods: ['이상치 허용(분할 기반)', '범주형 인코딩(Label/Ordinal)', 'max_features 비율 탐색'],
+      visualization_methods: ['피처 중요도(상위 10)', '실측 vs 예측', '잔차 플롯', '시계열/피처별 추세'] },
+    { model: 'GradientBoosting', mean_score: 0.903, std_score: 0.017, aux_score: -0.072,
+      preprocessing_methods: ['이상치 IQR 클리핑(선택)', '범주형 인코딩(Label/Ordinal)', 'learning_rate·n_estimators 조합 탐색'],
+      visualization_methods: ['피처 중요도(상위 10)', '학습 곡선(반복별 손실)', '실측 vs 예측', '잔차 플롯'] },
+    { model: 'AdaBoost', mean_score: 0.874, std_score: 0.021, aux_score: -0.105,
+      preprocessing_methods: ['이상치 IQR 클리핑 — 부스팅 가중치 왜곡 방지', '범주형 인코딩(Label)', '약한 학습기 max_depth=1~3 조정'],
+      visualization_methods: ['약한 학습기 오류율 추이', '피처 중요도', '실측 vs 예측'] },
+    { model: 'LogisticRegression', mean_score: 0.841, std_score: 0.025, aux_score: -0.142,
+      preprocessing_methods: ['StandardScaler', '이상치 IQR 클리핑', '다중공선성 확인(VIF)', '범주형 인코딩(One-Hot)'],
+      visualization_methods: ['실측 vs 예측', '잔차 플롯', '상관관계 히트맵', '계수(coef) 크기 막대'] },
+    { model: 'SVC', mean_score: 0.823, std_score: 0.028, aux_score: -0.168,
+      preprocessing_methods: ['StandardScaler', '이상치 IQR 클리핑', 'RBF 커널 γ·C 그리드 탐색'],
+      visualization_methods: ['실측 vs 예측', '잔차 플롯', '서포트 벡터 수 확인'] },
+    { model: 'KNN', mean_score: 0.797, std_score: 0.032, aux_score: -0.195,
+      preprocessing_methods: ['StandardScaler', '이상치 IQR 클리핑', '차원 축소(PCA) — 고차원 거리 왜곡 방지', 'k=5 이웃 수 교차검증으로 재확인'],
+      visualization_methods: ['실측 vs 예측', '잔차 플롯', 'k별 오차 곡선'] },
+    { model: 'DecisionTree', mean_score: 0.754, std_score: 0.041, aux_score: -0.248,
+      preprocessing_methods: ['이상치 허용(분할 기반)', '범주형 인코딩(Label/Ordinal)', 'max_depth 제한으로 과적합 방지', 'min_samples_leaf 조정'],
+      visualization_methods: ['트리 구조 시각화(depth≤3)', '피처 중요도', '실측 vs 예측'] },
+  ],
+  preprocessing_methods: ['StandardScaler', '이상치 IQR 클리핑', '결측치 대체(중앙값/평균)'],
+  visualization_methods: ['산점도', '상관관계 히트맵', '실측 vs 예측', '잔차 플롯'],
+};
+
+/** 백엔드 미연결·오류 시 UI 폴백과 동일한 시연 데이터 */
+export function getMockAutomlResult(task: 'classification' | 'regression'): AutoMLFitResult {
+  return task === 'regression' ? { ...MOCK_AUTOML_REGRESSION } : { ...MOCK_AUTOML_CLASSIFICATION };
+}
 
 export interface AutoMLFitResult {
   best_model: string;
@@ -119,7 +168,8 @@ export async function automlFit(
   options?: { timeoutMs?: number; signal?: AbortSignal }
 ): Promise<AutomlFitResponse> {
   if (isMockMode()) {
-    return { ok: true, data: { ...MOCK_AUTOML_RESULT, task, scoring: task === 'regression' ? 'r2' : 'accuracy', aux_scoring: task === 'regression' ? 'neg_mean_absolute_error' : 'f1_weighted' } };
+    const base = getMockAutomlResult(task);
+    return { ok: true, data: { ...base, task } };
   }
   const baseUrl = getBaseUrl();
   if (!baseUrl) {

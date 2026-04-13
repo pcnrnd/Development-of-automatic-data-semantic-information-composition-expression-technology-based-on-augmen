@@ -104,7 +104,7 @@ function getMockProfileForIndustry(industry: IndustryType): DataProfile {
   }
 }
 import { analysisService, getTemplateRecommendationsByColumns, getEnhancedTemplateRecommendations } from './services/analysisService';
-import { automlFit, AUTOML_FETCH_FAILED_MESSAGE, type AutoMLFitResult } from './services/backendApi';
+import { automlFit, AUTOML_FETCH_FAILED_MESSAGE, getMockAutomlResult, type AutoMLFitResult } from './services/backendApi';
 import { parseCsvForAutoml } from './utils/csvParser';
 import { stripLatinAcronymParentheses } from './utils/displayLabels';
 import {
@@ -138,6 +138,28 @@ function automlPrimaryScoringLabel(scoring?: string | null): string {
 /** 보조 지표가 음의 MAE(sklearn)인지 — 정렬·눈금 처리에 사용 */
 function isAutomlAuxMae(auxScoring?: string | null): boolean {
   return auxScoring === 'neg_mean_absolute_error';
+}
+
+/** 모델 순위 표 `Std (CV)` 열 — 마우스 호버용 설명(CV는 변동계수가 아니라 교차검증) */
+const AUTOML_STD_CV_HELP_KO =
+  'Std는 표준편차(standard deviation)이고, 여기서 CV는 변동계수가 아니라 교차검증(cross-validation)을 뜻합니다. k개 폴드 각각에서 계산한 주 지표를 퍼센트로 맞춘 뒤, 그 k개 값의 표준편차에 100을 곱해 ±로 보여 줍니다. 숫자가 클수록 폴드마다 점수가 들쭉날쭉해 모델이 덜 안정적일 수 있습니다.';
+
+/** 주 scoring에 대한 한글 도움말(테이블 헤더 title 등) */
+function automlPrimaryMetricHelpKo(scoring?: string | null): string {
+  if (scoring === 'r2')
+    return '결정계수 R²입니다. 회귀에서 타깃 분산을 모델이 얼마나 설명하는지를 0~100%로 표시합니다. 값이 높을수록 적합이 나은 편이나, 과적합이나 편향된 표본에서는 과대평가될 수 있어 잔차·보조 지표와 함께 보는 것이 좋습니다.';
+  if (scoring === 'accuracy')
+    return '분류 정확도(Accuracy)입니다. 전체 예측 중 맞춘 비율을 0~100%로 나타냅니다. 클래스 비율이 치우치면 수치는 높아도 소수 클래스를 놓칠 수 있으므로 F1 등 다른 지표를 함께 확인하세요.';
+  return '교차검증으로 계산한 주 평가 지표 평균입니다. 이 열 기준으로 모델 순위가 정렬됩니다.';
+}
+
+/** aux_scoring에 대한 한글 도움말 */
+function automlAuxMetricHelpKo(auxScoring?: string | null): string {
+  if (auxScoring === 'neg_mean_absolute_error')
+    return '평균 절대 오차(MAE)입니다. 예측과 실제 차이의 절댓값 평균으로, 타깃과 같은 단위입니다. 학습기는 sklearn의 neg_mean_absolute_error(음수 MAE)로 최적화하며, 표에는 양수 MAE로 보여 줍니다. 값이 작을수록 좋습니다.';
+  if (auxScoring === 'f1_weighted')
+    return '가중 F1(F1 weighted)입니다. 클래스별 F1을 표본 비율로 가중한 값으로, 불균형 분류에서 정확도만으로는 보기 어려운 균형 잡힌 성능을 볼 때 유용합니다.';
+  return '주 지표와 함께 참고하는 보조 평가 지표입니다.';
 }
 
 /** 업로드·분석에 사용된 프로파일로 데이터 활용 현황 문구 생성 (사용자 생성 템플릿용) */
@@ -1089,31 +1111,6 @@ const App: React.FC = () => {
     [dataPreview],
   );
 
-  const mockAutomlResult: AutoMLFitResult = useMemo(
-    () => ({
-      best_model: 'RandomForest',
-      best_score: 0.92,
-      task: 'classification',
-      scoring: 'accuracy',
-      aux_scoring: 'f1_weighted',
-      all_results: [
-        { model: 'HistGradientBoosting', mean_score: 0.93, std_score: 0.01, aux_score: 0.928 },
-        { model: 'RandomForest', mean_score: 0.92, std_score: 0.02, aux_score: 0.915 },
-        { model: 'ExtraTrees', mean_score: 0.91, std_score: 0.02, aux_score: 0.905 },
-        { model: 'GradientBoosting', mean_score: 0.89, std_score: 0.02, aux_score: 0.885 },
-        { model: 'AdaBoost', mean_score: 0.86, std_score: 0.03, aux_score: 0.855 },
-        { model: 'LogisticRegression', mean_score: 0.82, std_score: 0.03, aux_score: 0.815 },
-        { model: 'SVC', mean_score: 0.80, std_score: 0.03, aux_score: 0.795 },
-        { model: 'KNN', mean_score: 0.78, std_score: 0.04, aux_score: 0.775 },
-        { model: 'DecisionTree', mean_score: 0.74, std_score: 0.05, aux_score: 0.735 },
-        { model: 'KNN_k3', mean_score: 0.73, std_score: 0.05, aux_score: 0.725 },
-      ],
-      preprocessing_methods: DEFAULT_PREPROCESSING_METHODS,
-      visualization_methods: DEFAULT_VISUALIZATION_METHODS,
-    }),
-    []
-  );
-
   const runAnalysis = async () => {
     setIsProcessing(true);
     setAnalysisResult(null);
@@ -1155,14 +1152,16 @@ const App: React.FC = () => {
       : null;
 
     const automlTask = resolveAutomlTaskForAnalysis(automlTaskMode, fileClassCounts, dataPreview);
+    const configuredMethods = preprocCompleted ? preprocMethodsFromConfig(preprocConfig) : DEFAULT_PREPROCESSING_METHODS;
+    const automlFallbackBase = getMockAutomlResult(automlTask);
     if (automlTask === 'classification') {
       const classificationValidationError = validateClassificationTarget(target);
       if (classificationValidationError) {
         await new Promise((r) => setTimeout(r, 1200));
         setAutomlResult({
-          ...mockAutomlResult,
+          ...automlFallbackBase,
           preprocessing_methods: templatePreprocMethods ?? configuredMethods,
-          visualization_methods: templateVizMethods ?? mockAutomlResult.visualization_methods,
+          visualization_methods: templateVizMethods ?? automlFallbackBase.visualization_methods,
         });
         setAutomlFallbackReason(classificationValidationError);
         setCurrentStep(2);
@@ -1178,7 +1177,6 @@ const App: React.FC = () => {
     }
 
     const automlRes = await automlFit(features, target, automlTask);
-    const configuredMethods = preprocCompleted ? preprocMethodsFromConfig(preprocConfig) : DEFAULT_PREPROCESSING_METHODS;
     if (automlRes.ok) {
       const data = automlRes.data;
       if (data.best_model != null && Number.isFinite(data.best_score)) {
@@ -1189,18 +1187,18 @@ const App: React.FC = () => {
         });
       } else {
         setAutomlResult({
-          ...mockAutomlResult,
+          ...automlFallbackBase,
           preprocessing_methods: templatePreprocMethods ?? configuredMethods,
-          visualization_methods: templateVizMethods ?? mockAutomlResult.visualization_methods,
+          visualization_methods: templateVizMethods ?? automlFallbackBase.visualization_methods,
         });
         setAutomlFallbackReason('모델 도출 결과가 없습니다.');
       }
     } else {
       await new Promise((r) => setTimeout(r, 1200));
       setAutomlResult({
-        ...mockAutomlResult,
+        ...automlFallbackBase,
         preprocessing_methods: templatePreprocMethods ?? configuredMethods,
-        visualization_methods: templateVizMethods ?? mockAutomlResult.visualization_methods,
+        visualization_methods: templateVizMethods ?? automlFallbackBase.visualization_methods,
       });
       if (
         'error' in automlRes &&
@@ -1302,6 +1300,9 @@ const App: React.FC = () => {
       activeLabel: useAux ? (auxLabel as string) : primaryLabel,
       chartBarMax,
       xTickFormatter,
+      primaryMetricHelp: automlPrimaryMetricHelpKo(automlResult.scoring),
+      auxMetricHelp: automlAuxMetricHelpKo(automlResult.aux_scoring),
+      stdCvHelp: AUTOML_STD_CV_HELP_KO,
     };
   }, [automlResult, automlScoreMetric]);
 
@@ -4118,6 +4119,7 @@ const App: React.FC = () => {
                                           <button
                                             type="button"
                                             onClick={() => setAutomlScoreMetric('primary')}
+                                            title={sb.primaryMetricHelp}
                                             className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${
                                               !sb.useAux
                                                 ? 'bg-white text-slate-800 shadow-sm'
@@ -4129,6 +4131,7 @@ const App: React.FC = () => {
                                           <button
                                             type="button"
                                             onClick={() => setAutomlScoreMetric('aux')}
+                                            title={sb.auxMetricHelp}
                                             className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${
                                               sb.useAux
                                                 ? 'bg-white text-slate-800 shadow-sm'
@@ -4225,12 +4228,39 @@ const App: React.FC = () => {
                                       <tr className="bg-slate-50/95 text-left border-b border-slate-200">
                                         <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-14">순위</th>
                                         <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500">모델</th>
-                                        <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500 text-right whitespace-nowrap">{sb.activeLabel}</th>
+                                        <th
+                                          scope="col"
+                                          title={sb.useAux ? sb.auxMetricHelp : sb.primaryMetricHelp}
+                                          className="px-3 py-2.5 text-xs font-semibold text-slate-500 text-right whitespace-nowrap cursor-help"
+                                        >
+                                          <span className="inline-flex items-center justify-end gap-1 w-full min-w-0">
+                                            <span>{sb.activeLabel}</span>
+                                            <HelpCircle className="w-3.5 h-3.5 text-slate-400/75 shrink-0" aria-hidden />
+                                          </span>
+                                        </th>
                                         {showStdCol && (
-                                          <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500 text-right whitespace-nowrap">Std (CV)</th>
+                                          <th
+                                            scope="col"
+                                            title={sb.stdCvHelp}
+                                            className="px-3 py-2.5 text-xs font-semibold text-slate-500 text-right whitespace-nowrap cursor-help"
+                                          >
+                                            <span className="inline-flex items-center justify-end gap-1 w-full min-w-0">
+                                              <span>Std (CV)</span>
+                                              <HelpCircle className="w-3.5 h-3.5 text-slate-400/75 shrink-0" aria-hidden />
+                                            </span>
+                                          </th>
                                         )}
                                         {showSecondCol && secondColLabel && (
-                                          <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500 text-right whitespace-nowrap">{secondColLabel}</th>
+                                          <th
+                                            scope="col"
+                                            title={sb.useAux ? sb.primaryMetricHelp : sb.auxMetricHelp}
+                                            className="px-3 py-2.5 text-xs font-semibold text-slate-500 text-right whitespace-nowrap cursor-help"
+                                          >
+                                            <span className="inline-flex items-center justify-end gap-1 w-full min-w-0">
+                                              <span>{secondColLabel}</span>
+                                              <HelpCircle className="w-3.5 h-3.5 text-slate-400/75 shrink-0" aria-hidden />
+                                            </span>
+                                          </th>
                                         )}
                                       </tr>
                                     </thead>
