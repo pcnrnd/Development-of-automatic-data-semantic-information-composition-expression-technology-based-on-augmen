@@ -21,7 +21,7 @@ class AutoMLFitRequest(BaseModel):
     features: List[List[float]] = Field(..., min_length=2)
     target: List[float] = Field(..., min_length=2)
     task: Literal["classification", "regression"] = "classification"
-    cv: Optional[int] = 3
+    cv: Optional[int] = 5
     scoring: Optional[str] = None
 
 
