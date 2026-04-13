@@ -56,6 +56,10 @@ export interface ModelPerformance {
   recall?: number;
   /** RMSE (회귀) */
   rmse?: number;
+  /** 결정계수 R² (회귀 설명력, 0~1) */
+  r2?: number;
+  /** Mean Absolute Error (회귀) */
+  mae?: number;
   /** 학습 소요 시간 (예: "2m 30s") */
   trainingTime?: string;
 }

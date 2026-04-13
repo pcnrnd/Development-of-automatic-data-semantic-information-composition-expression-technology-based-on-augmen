@@ -15,7 +15,7 @@ from sklearn.ensemble import (
     AdaBoostClassifier, AdaBoostRegressor,
     HistGradientBoostingClassifier, HistGradientBoostingRegressor,
 )
-from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC, SVR
 from sklearn.tree import DecisionTreeClassifier
 
@@ -30,9 +30,8 @@ CLASSIFIERS = [
     ("SVC", SVC(kernel="rbf", random_state=42)),
     ("KNN", KNeighborsClassifier(n_neighbors=5)),
     ("DecisionTree", DecisionTreeClassifier(random_state=42)),
-    ("KNN_k3", KNeighborsClassifier(n_neighbors=3)),
 ]
-# 회귀용 후보 (10개)
+# 회귀용 후보 (9개) — KNN 제외: 거리 기반이라 시계열/제조 회귀에 일반화 약함
 REGRESSORS = [
     ("Ridge", Ridge()),
     ("Lasso", Lasso(max_iter=2000)),
@@ -43,7 +42,6 @@ REGRESSORS = [
     ("GradientBoosting", GradientBoostingRegressor(n_estimators=100, random_state=42)),
     ("AdaBoost", AdaBoostRegressor(n_estimators=100, random_state=42)),
     ("SVR", SVR(kernel="rbf")),
-    ("KNN", KNeighborsRegressor(n_neighbors=5)),
 ]
 
 # 전처리·시각화 추천용 상수 (매직 넘버 제거)
@@ -58,7 +56,7 @@ DEFAULT_VISUALIZATION = ["산점도", "상관관계 히트맵"]
 
 # 모델 패밀리 분류: 스케일 민감 vs 트리/부스팅
 SCALE_DEPENDENT_MODELS = frozenset({
-    "LogisticRegression", "SVC", "SVR", "KNN", "KNN_k3",
+    "LogisticRegression", "SVC", "SVR", "KNN",
     "Ridge", "Lasso", "ElasticNet",
 })
 TREE_BOOSTING_MODELS = frozenset({
@@ -137,12 +135,11 @@ def _get_per_model_recommendations(name: str, task: str, hints: dict) -> tuple[L
         preprocessing += ["StandardScaler", "이상치 IQR 클리핑", "RBF 커널 γ·C 그리드 탐색"]
         if many_features:
             preprocessing.append("차원 축소(PCA 후 SVM)")
-    elif name in ("KNN", "KNN_k3"):
+    elif name == "KNN":
         preprocessing += ["StandardScaler", "이상치 IQR 클리핑"]
         if many_features:
             preprocessing.append("차원 축소(PCA) — 고차원 거리 왜곡 방지")
-        k_val = 3 if name == "KNN_k3" else 5
-        preprocessing.append(f"k={k_val} 이웃 수 교차검증으로 재확인")
+        preprocessing.append("k=5 이웃 수 교차검증으로 재확인")
     elif name == "RandomForest":
         preprocessing += ["이상치 IQR 클리핑(선택)", "범주형 인코딩(Label/Ordinal)", "n_estimators·max_depth 탐색"]
         if has_imbalance and task == "classification":
@@ -184,11 +181,8 @@ def _get_per_model_recommendations(name: str, task: str, hints: dict) -> tuple[L
                 visualization.insert(0, "클래스 불균형 분포")
         else:
             visualization += ["잔차 플롯", "타깃·피처 관계", "오차 분포"]
-    elif name in ("KNN", "KNN_k3"):
-        if task == "classification":
-            visualization += ["혼동 행렬(학습 후)", "클래스 분포", "k별 정확도 곡선"]
-        else:
-            visualization += ["타깃·피처 관계", "잔차 플롯", "k별 R² 곡선"]
+    elif name == "KNN":
+        visualization += ["혼동 행렬(학습 후)", "클래스 분포", "k별 정확도 곡선"]
     elif name in ("RandomForest", "ExtraTrees"):
         if task == "classification":
             visualization += ["피처 중요도(상위 10)", "혼동 행렬(학습 후)", "클래스별 정밀도·재현율"]

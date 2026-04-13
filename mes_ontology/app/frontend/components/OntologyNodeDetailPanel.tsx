@@ -1,5 +1,6 @@
 import React from 'react';
 import { MES_ONTOLOGY } from '../constants';
+import { stripLatinAcronymParentheses } from '../utils/displayLabels';
 import { OntologySelectedNode } from '../types';
 import {
   Network,
@@ -110,7 +111,7 @@ const OntologyNodeDetailPanel: React.FC<OntologyNodeDetailPanelProps> = ({
                   return fn ? (
                     <li key={fid} className="text-sm text-slate-700 flex items-center gap-2">
                       <span className="font-mono text-xs text-slate-400">{fn.id}</span>
-                      <span>{fn.nameKo ?? fn.name}</span>
+                      <span>{stripLatinAcronymParentheses(fn.nameKo ?? fn.name)}</span>
                     </li>
                   ) : null;
                 })}
@@ -125,7 +126,9 @@ const OntologyNodeDetailPanel: React.FC<OntologyNodeDetailPanelProps> = ({
                   {CATEGORY_LABEL_KO[selectedNode.data.fn.category] ?? selectedNode.data.fn.category} 모듈
                 </span>
               </div>
-              <h3 className="text-lg font-bold text-slate-800">{selectedNode.data.fn.nameKo ?? selectedNode.data.fn.name}</h3>
+              <h3 className="text-lg font-bold text-slate-800">
+                {stripLatinAcronymParentheses(selectedNode.data.fn.nameKo ?? selectedNode.data.fn.name)}
+              </h3>
               <div className="flex flex-wrap gap-2">
                 <span className="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-md text-xs font-medium">ID: {selectedNode.data.fn.id}</span>
                 <span className="px-3 py-1 bg-slate-100 text-slate-600 rounded-md text-xs font-medium">표준: {selectedNode.data.fn.standard}</span>
@@ -219,6 +222,12 @@ const OntologyNodeDetailPanel: React.FC<OntologyNodeDetailPanelProps> = ({
                       {selectedNode.data.template.modelPerformance.rmse != null && (
                         <div className="flex justify-between gap-2"><dt className="text-slate-500">RMSE</dt><dd>{selectedNode.data.template.modelPerformance.rmse}</dd></div>
                       )}
+                      {selectedNode.data.template.modelPerformance.r2 != null && (
+                        <div className="flex justify-between gap-2"><dt className="text-slate-500">R²</dt><dd>{selectedNode.data.template.modelPerformance.r2.toFixed(3)}</dd></div>
+                      )}
+                      {selectedNode.data.template.modelPerformance.mae != null && (
+                        <div className="flex justify-between gap-2"><dt className="text-slate-500">MAE</dt><dd>{selectedNode.data.template.modelPerformance.mae}</dd></div>
+                      )}
                       {selectedNode.data.template.modelPerformance.trainingTime && (
                         <div className="flex justify-between gap-2"><dt className="text-slate-500">학습 소요 시간</dt><dd>{selectedNode.data.template.modelPerformance.trainingTime}</dd></div>
                       )}
@@ -268,7 +277,7 @@ const OntologyNodeDetailPanel: React.FC<OntologyNodeDetailPanelProps> = ({
                         return fn ? (
                           <li key={fid} className="text-sm text-slate-700 flex items-center gap-2">
                             <span className="font-mono text-xs text-slate-400">{fn.id}</span>
-                            <span>{fn.nameKo ?? fn.name}</span>
+                            <span>{stripLatinAcronymParentheses(fn.nameKo ?? fn.name)}</span>
                           </li>
                         ) : null;
                       })}

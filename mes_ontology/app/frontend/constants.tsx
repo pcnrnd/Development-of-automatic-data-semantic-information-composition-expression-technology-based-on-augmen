@@ -19,7 +19,7 @@ export const MES_ONTOLOGY: MESFunction[] = [
     id: 'F002',
     category: 'Quality',
     name: 'Statistical Process Control (SPC)',
-    nameKo: '통계적 공정 관리(SPC)',
+    nameKo: '통계적 공정 관리',
     description: 'Uses statistical methods to monitor and control a process to ensure it operates at its full potential.',
     descriptionKo: '통계적 방법으로 공정을 모니터링·관리하여 품질을 유지합니다.',
     standard: 'ISO 9001'
@@ -28,7 +28,7 @@ export const MES_ONTOLOGY: MESFunction[] = [
     id: 'F003',
     category: 'Maintenance',
     name: 'Predictive Maintenance (PdM)',
-    nameKo: '예지 보전(PdM)',
+    nameKo: '예지 보전',
     description: 'Predicts when equipment failure might occur so maintenance can be performed just-in-time.',
     descriptionKo: '설비 고장 시점을 예측하여 적시에 보전할 수 있도록 합니다.',
     standard: 'ISA-95'
@@ -128,10 +128,6 @@ export const PRIORITY_RECOMMENDATION_TITLE_KO = 'MES 기능 우선순위 추천'
 export const PRIORITY_RECOMMENDATION_DESCRIPTION_KO =
   '매칭 결과를 바탕으로 제조기업에 필요한 MES 기능 제안 (우선순위)';
 
-/** Insights 섹션 안내 — 칩이 무엇인지 한눈에 */
-export const INSIGHTS_SECTION_DESCRIPTION_KO =
-  '아래 문장은 이번 데이터 프로파일과 상위 추천 MES 기능을 보고, 규칙으로 골라 낸 개선 아이디어입니다. 실제 수집·전처리·시스템 도입은 별도로 진행하면 됩니다.';
-
 /** Standard MES Ontology 섹션 한 줄 설명 */
 export const ONTOLOGY_SECTION_DESCRIPTION_KO =
   '다양한 산업데이터 모델링 결과를 반영한 국제 표준 MES 기능 모델 온톨로지';
@@ -172,7 +168,7 @@ export const REFERENCE_TEMPLATES: ResultTemplate[] = [
     recommendedFunctionIds: ['F001'],
     summary: '공정 간 재공품 체공·이동 시간을 추적하여 병목 구간을 식별하는 템플릿입니다.',
     modelName: 'XGBoost',
-    modelPerformance: { rmse: 12.4, trainingTime: '2m 10s' },
+    modelPerformance: { r2: 0.853, mae: 9.8, trainingTime: '2m 10s' },
     preprocessingMethods: ['시간 차분', '이동 평균', '결측치 제거'],
     visualizationMethods: ['공정별 체공시간 박스플롯', '흐름도', '시계열 대시보드'],
     dataUsageSummary: '이동 이력 9,800건, 6개 변수(작업장·Lot·입고시각·출고시각·대기시간·이동시간). 12개 공정, 8:2 분할 적용.',
@@ -182,7 +178,7 @@ export const REFERENCE_TEMPLATES: ResultTemplate[] = [
     id: 'ref-spc',
     name: '참조: SPC 품질 분석',
     recommendedFunctionIds: ['F002'],
-    summary: '통계적 공정 관리(SPC)를 위한 품질 지표 분석 템플릿입니다.',
+    summary: '통계적 공정 관리를 위한 품질 지표 분석 템플릿입니다.',
     modelName: 'LogisticRegression',
     modelPerformance: { accuracy: 0.887, f1Score: 0.872, precision: 0.881, recall: 0.863, trainingTime: '0m 52s' },
     preprocessingMethods: ['StandardScaler', '클래스 균형', '차원 축소'],
@@ -195,7 +191,7 @@ export const REFERENCE_TEMPLATES: ResultTemplate[] = [
     recommendedFunctionIds: ['F002'],
     summary: '공정 능력 지수(Cpk/Ppk) 산출 및 규격 대비 공정 안정성 평가 템플릿입니다.',
     modelName: 'RandomForest',
-    modelPerformance: { rmse: 0.08, trainingTime: '3m 20s' },
+    modelPerformance: { r2: 0.921, mae: 0.061, trainingTime: '3m 20s' },
     preprocessingMethods: ['이상치 제거', '정규성 검정', '구간 집계'],
     visualizationMethods: ['관리도', '히스토그램', 'Cpk/Ppk 트렌드'],
     dataUsageSummary: '치수 측정 데이터 15,600건, 4개 특성(직경·두께·경도·무게). 규격상한/하한 연동, 샘플 20개 단위 Cpk 계산.',
@@ -218,7 +214,7 @@ export const REFERENCE_TEMPLATES: ResultTemplate[] = [
     recommendedFunctionIds: ['F003'],
     summary: '설비 상태 추세 기반 잔존 가동 시간(Remaining Useful Life) 예측 템플릿입니다.',
     modelName: 'XGBoost',
-    modelPerformance: { rmse: 18.2, trainingTime: '5m 40s' },
+    modelPerformance: { r2: 0.847, mae: 14.3, trainingTime: '5m 40s' },
     preprocessingMethods: ['시계열 윈도우', '특성 추출', 'StandardScaler', '결측치 보간'],
     visualizationMethods: ['RUL 추세선', '위험도 점수', '타깃·피처 관계'],
     dataUsageSummary: '베어링/모터 센서 62,000건, 14개 채널. 고장 시점까지 거리(RUL) 라벨 180건, 회귀 타깃으로 활용.',
@@ -333,7 +329,7 @@ export const REFERENCE_TEMPLATES: ResultTemplate[] = [
     recommendedFunctionIds: ['F008'],
     summary: '설비별 고장·점검 이력 기반 정기 점검 주기 추천 및 리스크 감소 효과 분석 템플릿입니다.',
     modelName: 'XGBoost',
-    modelPerformance: { rmse: 2.1, trainingTime: '3m 12s' },
+    modelPerformance: { r2: 0.908, mae: 1.6, trainingTime: '3m 12s' },
     preprocessingMethods: ['주기 집계', '고장 간격', 'StandardScaler', '결측치 제거'],
     visualizationMethods: ['주기별 고장률', '추천 주기 테이블', '리스크 스코어'],
     dataUsageSummary: '점검·고장 이력 7,200건 (1년), 6개 변수(설비·점검일·고장일·주기·유형 등). 설비 38대, 회귀 타깃 최적 주기.',
@@ -356,7 +352,7 @@ export const REFERENCE_TEMPLATES: ResultTemplate[] = [
     recommendedFunctionIds: ['F009'],
     summary: '전력·가스 등 에너지 사용량 시계열 추세 및 절감 구간 탐지 템플릿입니다.',
     modelName: 'LightGBM',
-    modelPerformance: { rmse: 8.5, trainingTime: '3m 40s' },
+    modelPerformance: { r2: 0.874, mae: 6.2, trainingTime: '3m 40s' },
     preprocessingMethods: ['시간대 집계', 'StandardScaler', '이상치 제거', '계절성 분해'],
     visualizationMethods: ['에너지 추세 라인', '시간대별 히트맵', '절감 구간 하이라이트'],
     dataUsageSummary: '에너지 로그 43,200건 (1시간 간격, 5개월), 5개 변수(설비·전력·가스·온도·날짜). 설비 20대, 회귀 타깃 사용량.',

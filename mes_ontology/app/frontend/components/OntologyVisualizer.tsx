@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { MES_ONTOLOGY, ONTOLOGY_SECTION_DESCRIPTION_KO } from '../constants';
+import { stripLatinAcronymParentheses } from '../utils/displayLabels';
 import { MESFunction, ResultTemplate, OntologySelectedNode } from '../types';
 import OntologyGraph from './OntologyGraph';
 import { OntologyGraphHelpTip } from './OntologyGraphHelpTip';
@@ -166,7 +167,9 @@ const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = fals
                               <span className="text-[10px] font-bold text-indigo-600 bg-indigo-100 px-1.5 py-0.5 rounded">매칭</span>
                             )}
                             <span className="font-mono text-xs text-slate-400 group-hover:text-indigo-600">{fn.id}</span>
-                            <span className="font-semibold text-slate-800 group-hover:text-indigo-600 text-sm">{fn.nameKo ?? fn.name}</span>
+                            <span className="font-semibold text-slate-800 group-hover:text-indigo-600 text-sm">
+                              {stripLatinAcronymParentheses(fn.nameKo ?? fn.name)}
+                            </span>
                             <span className="text-xs px-2 py-0.5 bg-slate-100 rounded font-medium text-slate-500">{fn.standard}</span>
                           </div>
                           <p className="text-xs text-slate-500 mt-0.5 line-clamp-1">{fn.descriptionKo ?? fn.description}</p>

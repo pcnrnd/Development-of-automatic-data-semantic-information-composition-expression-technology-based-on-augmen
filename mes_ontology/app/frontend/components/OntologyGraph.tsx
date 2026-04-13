@@ -6,6 +6,7 @@ import {
   Background,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   Handle,
   Position,
   type Node,
@@ -15,6 +16,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { MES_ONTOLOGY } from '../constants';
+import { stripLatinAcronymParentheses } from '../utils/displayLabels';
 import { MESFunction, ResultTemplate, OntologySelectedNode } from '../types';
 import {
   Network,
@@ -358,7 +360,7 @@ function buildGraphElements(
         type: 'function',
         position: { x: fx - 32, y: fy - 32 },
         data: {
-          label: fn.nameKo ?? fn.name,
+          label: stripLatinAcronymParentheses(fn.nameKo ?? fn.name),
           id: fn.id,
           standard: fn.standard,
           fn,
@@ -461,6 +463,33 @@ function buildGraphElements(
   return { nodes, edges };
 }
 
+/**
+ * 컨테이너 높이·노드 구성이 바뀐 뒤에도 그래프가 보이는 영역에 맞게 줌/팬되도록
+ * `fitView`를 다시 호출합니다. 마운트 직후 크기 0 또는 ResizeObserver 갱신 시
+ * React Flow가 한 번만 fit 하는 문제를 완화합니다.
+ */
+function RefitViewOnLayoutChange({ layoutKey }: { layoutKey: string }) {
+  const { fitView } = useReactFlow();
+
+  useEffect(() => {
+    let cancelled = false;
+    let innerRaf = 0;
+    const outerRaf = requestAnimationFrame(() => {
+      innerRaf = requestAnimationFrame(() => {
+        if (cancelled) return;
+        fitView({ padding: 0.12, duration: 0, maxZoom: 1.5 });
+      });
+    });
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(outerRaf);
+      cancelAnimationFrame(innerRaf);
+    };
+  }, [fitView, layoutKey]);
+
+  return null;
+}
+
 export interface OntologyGraphProps {
   onSelectNode?: (node: OntologySelectedNode) => void;
   onSelectFunction?: (fn: MESFunction) => void;
@@ -511,6 +540,7 @@ const OntologyGraph: React.FC<OntologyGraphProps> = ({
     () => buildGraphElements(MES_ONTOLOGY, highlightedIds, templates, recommendedTemplateIds),
     [highlightedIds, templates, recommendedTemplateIds]
   );
+  const refitLayoutKey = `${fixedHeight ? (height ?? 0) : canvasHeight}|${initialNodes.length}|${initialEdges.length}|${highlightedIds?.join(',') ?? ''}|${templates?.length ?? 0}`;
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
@@ -584,15 +614,15 @@ const OntologyGraph: React.FC<OntologyGraphProps> = ({
           onNodeClick={onNodeClick}
           nodeTypes={nodeTypes}
           fitView
-          fitViewOptions={{ padding: 0.25 }}
+          fitViewOptions={{ padding: 0.12, maxZoom: 1.5 }}
           minZoom={0.25}
           maxZoom={1.5}
-          defaultViewport={{ x: 0, y: 0, zoom: 0.85 }}
           nodesDraggable
           nodesConnectable={false}
           elementsSelectable
           proOptions={{ hideAttribution: true }}
         >
+          <RefitViewOnLayoutChange layoutKey={refitLayoutKey} />
           <Controls className="!bottom-3 !top-auto !bg-white/90 !rounded-lg !border !border-slate-200 !shadow" showInteractive={false} />
           <Background gap={20} size={1} color="#cbd5e1" />
         </ReactFlow>

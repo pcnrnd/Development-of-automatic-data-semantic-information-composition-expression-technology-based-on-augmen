@@ -1,4 +1,5 @@
 import { MES_FUNCTION_SHORT_LABEL_KO } from '../constants';
+import { stripLatinAcronymParentheses } from '../utils/displayLabels';
 import {
   AugmentationSuggestionItem,
   DataProfile,
@@ -107,16 +108,16 @@ function buildAugmentationSuggestions(
   }
   if (topIds.has('F002')) {
     pool.push({
-      title: '공정 품질(SPC)용 센서 한계선 검토',
+      title: '공정 품질용 센서 한계선 검토',
       detail:
-        '상위 추천에 품질(SPC) 기능이 포함되어 있습니다. 온도·압력 등 주요 센서마다 규격 상한·하한(관리도 한계)을 정의하면 이상 징후를 일관되게 잡을 수 있습니다.',
+        '상위 추천에 품질 기능이 포함되어 있습니다. 온도·압력 등 주요 센서마다 규격 상한·하한(관리도 한계)을 정의하면 이상 징후를 일관되게 잡을 수 있습니다.',
     });
   }
   if (topIds.has('F003')) {
     pool.push({
       title: '예지 보전을 위한 보전·고장 이력 보강',
       detail:
-        '예지 보전(PdM)이 상위에 있으면, 정비 일시·부품 교체·알람·다운타임 같은 이력을 설비 ID와 묶어 쌓는 것이 좋습니다. 라벨이 있으면 고장 예측 모델 품질이 크게 좋아질 수 있습니다.',
+        '예지 보전이 상위에 있으면, 정비 일시·부품 교체·알람·다운타임 같은 이력을 설비 ID와 묶어 쌓는 것이 좋습니다. 라벨이 있으면 고장 예측 모델 품질이 크게 좋아질 수 있습니다.',
     });
   }
   if (profile.missingValues > 10) {
@@ -191,7 +192,7 @@ export async function analyzeDataAndMatch(
     score = Math.min(1, score);
     score = Math.min(1, score * signalStrength * (0.9 + completeness * 0.1));
 
-    const fnNameKo = fn.nameKo ?? fn.name;
+    const fnNameKo = stripLatinAcronymParentheses(fn.nameKo ?? fn.name);
     const industryKo = INDUSTRY_LABEL_KO[industry] ?? String(industry);
     const rationaleKo =
       reasons.length > 0
@@ -222,11 +223,11 @@ export async function analyzeDataAndMatch(
   const industryKoForSummary = INDUSTRY_LABEL_KO[industry] ?? String(industry);
   const topNamesKo = matches
     .slice(0, 2)
-    .map(
-      (m) =>
-        MES_FUNCTION_SHORT_LABEL_KO[m.functionId] ??
-        ontology.find((o) => o.id === m.functionId)?.nameKo,
-    )
+    .map((m) => {
+      const raw =
+        MES_FUNCTION_SHORT_LABEL_KO[m.functionId] ?? ontology.find((o) => o.id === m.functionId)?.nameKo;
+      return raw ? stripLatinAcronymParentheses(raw) : '';
+    })
     .filter(Boolean)
     .join(', ');
   const summary = topNamesKo

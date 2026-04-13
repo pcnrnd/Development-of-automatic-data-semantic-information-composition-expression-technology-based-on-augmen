@@ -106,6 +106,7 @@ function getMockProfileForIndustry(industry: IndustryType): DataProfile {
 import { analysisService, getTemplateRecommendationsByColumns, getEnhancedTemplateRecommendations } from './services/analysisService';
 import { automlFit, AUTOML_FETCH_FAILED_MESSAGE, type AutoMLFitResult } from './services/backendApi';
 import { parseCsvForAutoml } from './utils/csvParser';
+import { stripLatinAcronymParentheses } from './utils/displayLabels';
 import {
   MES_ONTOLOGY,
   MES_FUNCTION_SHORT_LABEL_KO,
@@ -114,11 +115,30 @@ import {
   PIPELINE_STEPS_KO,
   PRIORITY_RECOMMENDATION_TITLE_KO,
   PRIORITY_RECOMMENDATION_DESCRIPTION_KO,
-  INSIGHTS_SECTION_DESCRIPTION_KO,
 } from './constants';
 
 const TOTAL_STEPS = 4;
 const stepLabelKo = ['데이터 프로파일링', 'AutoML 모델링', '온톨로지 매칭', '전략 제안'];
+
+/** AutoML `aux_scoring` 필드 → 표시 라벨 */
+function automlAuxScoringLabel(auxScoring?: string | null): string | null {
+  if (!auxScoring) return null;
+  if (auxScoring === 'f1_weighted') return 'F1 (weighted)';
+  if (auxScoring === 'neg_mean_absolute_error') return 'MAE';
+  return auxScoring;
+}
+
+/** AutoML 주 scoring 필드 → 표시 라벨 */
+function automlPrimaryScoringLabel(scoring?: string | null): string {
+  if (scoring === 'accuracy') return 'Accuracy';
+  if (scoring === 'r2') return 'R²';
+  return scoring && scoring.length > 0 ? scoring : 'Score';
+}
+
+/** 보조 지표가 음의 MAE(sklearn)인지 — 정렬·눈금 처리에 사용 */
+function isAutomlAuxMae(auxScoring?: string | null): boolean {
+  return auxScoring === 'neg_mean_absolute_error';
+}
 
 /** 업로드·분석에 사용된 프로파일로 데이터 활용 현황 문구 생성 (사용자 생성 템플릿용) */
 function buildDataUsageSummary(profile: DataProfile | null, industry: IndustryType): string | undefined {
@@ -973,6 +993,8 @@ const App: React.FC = () => {
   const [automlResult, setAutomlResult] = useState<AutoMLFitResult | null>(null);
   /** AutoML 백엔드 호출 실패 시 사용자 안내 메시지 (빈 문자열이면 미설정/시뮬레이션) */
   const [automlFallbackReason, setAutomlFallbackReason] = useState<string | null>(null);
+  /** 결과 카드: 주 지표 vs 보조 지표(F1·MAE) 막대·순위 전환 */
+  const [automlScoreMetric, setAutomlScoreMetric] = useState<'primary' | 'aux'>('primary');
   const [showTopMatchesOnly, setShowTopMatchesOnly] = useState(true);
   /** 결과 탭 내 Standard MES Ontology 그래프 펼침 여부 (접기/펼치기용) */
   const [resultOntologyGraphOpen, setResultOntologyGraphOpen] = useState(true);
@@ -1073,17 +1095,18 @@ const App: React.FC = () => {
       best_score: 0.92,
       task: 'classification',
       scoring: 'accuracy',
+      aux_scoring: 'f1_weighted',
       all_results: [
-        { model: 'HistGradientBoosting', mean_score: 0.93, std_score: 0.01 },
-        { model: 'RandomForest', mean_score: 0.92, std_score: 0.02 },
-        { model: 'ExtraTrees', mean_score: 0.91, std_score: 0.02 },
-        { model: 'GradientBoosting', mean_score: 0.89, std_score: 0.02 },
-        { model: 'AdaBoost', mean_score: 0.86, std_score: 0.03 },
-        { model: 'LogisticRegression', mean_score: 0.82, std_score: 0.03 },
-        { model: 'SVC', mean_score: 0.80, std_score: 0.03 },
-        { model: 'KNN', mean_score: 0.78, std_score: 0.04 },
-        { model: 'DecisionTree', mean_score: 0.74, std_score: 0.05 },
-        { model: 'KNN_k3', mean_score: 0.73, std_score: 0.05 },
+        { model: 'HistGradientBoosting', mean_score: 0.93, std_score: 0.01, aux_score: 0.928 },
+        { model: 'RandomForest', mean_score: 0.92, std_score: 0.02, aux_score: 0.915 },
+        { model: 'ExtraTrees', mean_score: 0.91, std_score: 0.02, aux_score: 0.905 },
+        { model: 'GradientBoosting', mean_score: 0.89, std_score: 0.02, aux_score: 0.885 },
+        { model: 'AdaBoost', mean_score: 0.86, std_score: 0.03, aux_score: 0.855 },
+        { model: 'LogisticRegression', mean_score: 0.82, std_score: 0.03, aux_score: 0.815 },
+        { model: 'SVC', mean_score: 0.80, std_score: 0.03, aux_score: 0.795 },
+        { model: 'KNN', mean_score: 0.78, std_score: 0.04, aux_score: 0.775 },
+        { model: 'DecisionTree', mean_score: 0.74, std_score: 0.05, aux_score: 0.735 },
+        { model: 'KNN_k3', mean_score: 0.73, std_score: 0.05, aux_score: 0.725 },
       ],
       preprocessing_methods: DEFAULT_PREPROCESSING_METHODS,
       visualization_methods: DEFAULT_VISUALIZATION_METHODS,
@@ -1216,6 +1239,71 @@ const App: React.FC = () => {
     () => resolveAutomlTaskForAnalysis(automlTaskMode, fileClassCounts, dataPreview) === 'classification',
     [automlTaskMode, dataPreview, fileClassCounts]
   );
+
+  useEffect(() => {
+    setAutomlScoreMetric('primary');
+  }, [automlResult]);
+
+  type AutomlResultRow = NonNullable<AutoMLFitResult['all_results']>[number];
+
+  /** AutoML 추천 카드: 선택한 지표 기준 정렬·막대 길이·라벨 */
+  const automlScoreboard = useMemo(() => {
+    if (!automlResult) return null;
+    const rawList: AutomlResultRow[] =
+      automlResult.all_results && automlResult.all_results.length > 0
+        ? automlResult.all_results.slice()
+        : [{ model: automlResult.best_model, mean_score: automlResult.best_score }];
+
+    const primaryLabel = automlPrimaryScoringLabel(automlResult.scoring);
+    const auxLabel = automlAuxScoringLabel(automlResult.aux_scoring);
+    const isMae = isAutomlAuxMae(automlResult.aux_scoring);
+    const hasAuxData =
+      Boolean(auxLabel) &&
+      rawList.some((r) => r.aux_score != null && Number.isFinite(Number(r.aux_score)));
+
+    const useAux = automlScoreMetric === 'aux' && hasAuxData;
+
+    const sorted = rawList.slice().sort((a, b) => {
+      if (!useAux) return b.mean_score - a.mean_score;
+      const av = a.aux_score;
+      const bv = b.aux_score;
+      if (av == null || !Number.isFinite(Number(av))) return 1;
+      if (bv == null || !Number.isFinite(Number(bv))) return -1;
+      if (isMae) return Math.abs(Number(av)) - Math.abs(Number(bv));
+      return Number(bv) - Number(av);
+    });
+
+    const chartBarMax = useAux
+      ? isMae
+        ? Math.max(...sorted.map((r) => Math.abs(Number(r.aux_score ?? 0))), 1e-9) * 1.08
+        : 100
+      : 100;
+
+    const chartData = sorted.map((r) => ({
+      name: r.model,
+      barValue: useAux
+        ? isMae
+          ? Math.abs(Number(r.aux_score ?? 0))
+          : Math.abs(Number(r.aux_score ?? 0)) * 100
+        : r.mean_score * 100,
+    }));
+
+    const xTickFormatter =
+      useAux && isMae ? (v: number) => v.toFixed(3) : (v: number) => `${v.toFixed(0)}%`;
+
+    return {
+      sorted,
+      chartData,
+      primaryLabel,
+      auxLabel,
+      hasAuxData,
+      isMae,
+      useAux,
+      activeLabel: useAux ? (auxLabel as string) : primaryLabel,
+      chartBarMax,
+      xTickFormatter,
+    };
+  }, [automlResult, automlScoreMetric]);
 
   const preprocChartData = useMemo(() => {
     // dataProfile이 없으면(파일 미업로드 상태) 의미없는 수치를 보여주지 않음
@@ -1669,7 +1757,7 @@ const App: React.FC = () => {
                       const topFn = top ? MES_ONTOLOGY.find((o) => o.id === top.functionId) : null;
                       return {
                         summary: analysisResult.summary,
-                        topMatchName: topFn?.nameKo ?? topFn?.name,
+                        topMatchName: stripLatinAcronymParentheses(topFn?.nameKo ?? topFn?.name),
                         profileFeatureNames: dataProfile?.features,
                       };
                     })()
@@ -1791,7 +1879,7 @@ const App: React.FC = () => {
                 </div>
               </section>
             )}
-            <section className="bg-white rounded-xl border border-indigo-100 shadow-sm overflow-hidden">
+            <section className="bg-white rounded-xl border border-indigo-100 shadow-sm">
               {uploadTemplateRecommendations.length > 0 && (
                 <div className="px-5 py-4 border-b border-slate-100">
                   <div className="flex items-center gap-2 mb-3">
@@ -1940,9 +2028,10 @@ const App: React.FC = () => {
                                 <div className="flex items-center justify-between mb-1">
                                   <span className="flex items-center gap-1">
                                     <span className="text-[10px] text-slate-500">유사도</span>
-                                    <span className="relative group inline-flex">
+                                    <span className="relative group/coverage-tip z-10 inline-flex">
                                       <span className="w-3.5 h-3.5 rounded-full bg-slate-200 text-slate-500 text-[9px] font-bold flex items-center justify-center cursor-help leading-none select-none">?</span>
-                                      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-60 text-[10px] text-slate-600 bg-white border border-slate-200 rounded-md shadow-lg px-2.5 py-2 leading-relaxed z-20 hidden group-hover:block pointer-events-none whitespace-normal">
+                                      {/* 아래·좌측 정렬: 상위 section overflow와 위쪽 배치 시 잘림 방지 */}
+                                      <span className="absolute top-full left-0 mt-1.5 w-60 max-w-[min(15rem,calc(100vw-2rem))] text-[10px] text-slate-600 bg-white border border-slate-200 rounded-md shadow-lg px-2.5 py-2 leading-relaxed z-50 hidden group-hover/coverage-tip:block pointer-events-none whitespace-normal">
                                         <span className="font-semibold text-slate-700 block mb-1">유사도 산정 기준</span>
                                         <span className="block">이 템플릿이 요구하는 핵심 항목(예: 설비 ID, 타임스탬프, 측정값) 중 업로드한 데이터 컬럼과 일치하는 항목 수로 유사도를 계산합니다.</span>
                                         <span className="block mt-1">일치 항목이 많을수록 데이터 구조가 이 템플릿과 유사합니다. 우측 값은 일치 비율(%)입니다.</span>
@@ -1971,6 +2060,12 @@ const App: React.FC = () => {
                               )}
                               {template.modelPerformance?.rmse != null && (
                                 <span><span className="font-medium text-slate-700">RMSE</span> {template.modelPerformance.rmse}</span>
+                              )}
+                              {template.modelPerformance?.r2 != null && (
+                                <span><span className="font-medium text-slate-700">R²</span> {template.modelPerformance.r2.toFixed(3)}</span>
+                              )}
+                              {template.modelPerformance?.mae != null && (
+                                <span><span className="font-medium text-slate-700">MAE</span> {template.modelPerformance.mae}</span>
                               )}
                             </div>
                             {template.preprocessingMethods && template.preprocessingMethods.length > 0 && (
@@ -3990,26 +4085,71 @@ const App: React.FC = () => {
                         AutoML 추천 리스트
                       </h3>
 
-                      {automlResult && (
+                      {automlResult && automlScoreboard && (
                         <>
-                          {/* 모델 점수 시각화 — 차트 툴팁에 지표 전체 표시 (모델 순위 테이블 위) */}
+                          {/* 모델 점수 시각화 — 툴바로 주/보조 지표 전환, 차트·순위와 동기화 */}
                           <div className="mb-5">
                             {(() => {
-                              const primaryLabel = automlResult.scoring === 'accuracy' ? 'Accuracy' : automlResult.scoring === 'r2' ? 'R²' : (automlResult.scoring ?? 'Score');
-                              const auxLabel = automlResult.aux_scoring === 'f1_weighted' ? 'F1 (weighted)' : automlResult.aux_scoring === 'neg_mean_absolute_error' ? 'MAE' : (automlResult.aux_scoring ?? null);
-                              const isMae = automlResult.aux_scoring === 'neg_mean_absolute_error';
-                              const resultsMap = new Map((automlResult.all_results ?? []).map(r => [r.model, r]));
-                              const chartData = (automlResult.all_results ?? [{ model: automlResult.best_model, mean_score: automlResult.best_score }])
-                                .slice()
-                                .sort((a, b) => b.mean_score - a.mean_score)
-                                .map((r) => ({ name: r.model, fullScore: r.mean_score * 100 }));
+                              const sb = automlScoreboard;
+                              const primaryLabel = sb.primaryLabel;
+                              const auxLabel = sb.auxLabel;
+                              const isMae = sb.isMae;
+                              const resultsMap = new Map((automlResult.all_results ?? []).map((r) => [r.model, r]));
+                              const fmtAuxTooltip = (r: AutomlResultRow) =>
+                                r.aux_score != null && Number.isFinite(Number(r.aux_score))
+                                  ? isMae
+                                    ? Math.abs(Number(r.aux_score)).toFixed(4)
+                                    : `${(Math.abs(Number(r.aux_score)) * 100).toFixed(2)}%`
+                                  : null;
                               return (
                                 <>
-                                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">모델별 점수 — {primaryLabel}</p>
+                                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between gap-y-2 mb-3">
+                                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                                      모델별 점수 — {sb.activeLabel}
+                                    </p>
+                                    {sb.hasAuxData && (
+                                      <div
+                                        className="flex flex-wrap items-center gap-1.5 shrink-0"
+                                        role="toolbar"
+                                        aria-label="모델 점수 지표 전환"
+                                      >
+                                        <span className="text-[10px] text-slate-400 hidden sm:inline">지표</span>
+                                        <div className="inline-flex rounded-lg border border-slate-200/90 bg-slate-100/70 p-0.5 gap-0.5">
+                                          <button
+                                            type="button"
+                                            onClick={() => setAutomlScoreMetric('primary')}
+                                            className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${
+                                              !sb.useAux
+                                                ? 'bg-white text-slate-800 shadow-sm'
+                                                : 'text-slate-500 hover:text-slate-700'
+                                            }`}
+                                          >
+                                            {primaryLabel}
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => setAutomlScoreMetric('aux')}
+                                            className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${
+                                              sb.useAux
+                                                ? 'bg-white text-slate-800 shadow-sm'
+                                                : 'text-slate-500 hover:text-slate-700'
+                                            }`}
+                                          >
+                                            {auxLabel}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
                                   <div className="w-full min-h-[10rem]" style={{ height: `clamp(10rem, ${Math.max(10, (automlResult.all_results?.length ?? 5) * 2.2)}rem, 28rem)` }}>
                                     <ResponsiveContainer width="100%" height="100%">
-                                      <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 8, left: 8, bottom: 4 }}>
-                                        <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 10 }} tickFormatter={(v) => `${v.toFixed(0)}%`} />
+                                      <BarChart data={sb.chartData} layout="vertical" margin={{ top: 4, right: 8, left: 8, bottom: 4 }}>
+                                        <XAxis
+                                          type="number"
+                                          domain={[0, sb.chartBarMax]}
+                                          tick={{ fontSize: 10 }}
+                                          tickFormatter={sb.xTickFormatter}
+                                        />
                                         <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 11 }} />
                                         <Tooltip
                                           content={({ active, payload }) => {
@@ -4017,9 +4157,7 @@ const App: React.FC = () => {
                                             const modelName = payload[0]?.payload?.name as string;
                                             const r = resultsMap.get(modelName);
                                             if (!r) return null;
-                                            const auxVal = r.aux_score != null
-                                              ? isMae ? Math.abs(r.aux_score).toFixed(4) : `${(Math.abs(r.aux_score) * 100).toFixed(2)}%`
-                                              : null;
+                                            const auxVal = fmtAuxTooltip(r);
                                             return (
                                               <div className="bg-slate-800 text-white text-xs rounded-lg px-3 py-2 shadow-lg flex flex-col gap-1">
                                                 <span className="font-semibold text-slate-300">{modelName}</span>
@@ -4030,8 +4168,8 @@ const App: React.FC = () => {
                                             );
                                           }}
                                         />
-                                        <Bar dataKey="fullScore" radius={[0, 4, 4, 0]} name={primaryLabel}>
-                                          {chartData.map((_, i) => (
+                                        <Bar dataKey="barValue" radius={[0, 4, 4, 0]} name={sb.activeLabel}>
+                                          {sb.chartData.map((_, i) => (
                                             <Cell key={i} fill={['#4f46e5', '#6366f1', '#818cf8', '#a5b4fc', '#c7d2fe', '#e0e7ff', '#f1f5f9', '#94a3b8', '#cbd5e1', '#e2e8f0'][i] ?? '#94a3b8'} />
                                           ))}
                                         </Bar>
@@ -4048,14 +4186,14 @@ const App: React.FC = () => {
                             <div>
                               <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">모델 순위</p>
                               {(() => {
-                              const list = (automlResult.all_results ?? [{ model: automlResult.best_model, mean_score: automlResult.best_score }])
-                                .slice()
-                                .sort((a, b) => b.mean_score - a.mean_score);
-                              const primaryLabel = automlResult.scoring === 'accuracy' ? 'Accuracy' : automlResult.scoring === 'r2' ? 'R²' : (automlResult.scoring ?? 'Score');
-                              const auxLabel = automlResult.aux_scoring === 'f1_weighted' ? 'F1 (weighted)' : automlResult.aux_scoring === 'neg_mean_absolute_error' ? 'MAE' : (automlResult.aux_scoring ?? null);
-                              const isMae = automlResult.aux_scoring === 'neg_mean_absolute_error';
+                              const sb = automlScoreboard;
+                              const list = sb.sorted;
+                              const primaryLabel = sb.primaryLabel;
+                              const auxLabel = sb.auxLabel;
+                              const isMae = sb.isMae;
                               const showStdCol = list.some((r) => r.std_score != null);
-                              const showAuxCol = Boolean(auxLabel) && list.some((r) => r.aux_score != null);
+                              const showSecondCol = sb.hasAuxData;
+                              const secondColLabel = sb.useAux ? primaryLabel : (auxLabel ?? '');
                               const rowClass = (i: number) =>
                                 [
                                   'bg-amber-50/90 text-amber-900 border-l-2 border-amber-300',
@@ -4064,6 +4202,22 @@ const App: React.FC = () => {
                                   'bg-white text-slate-700',
                                   'bg-white text-slate-700',
                                 ][i] ?? 'bg-white text-slate-600';
+                              const cellActive = (r: AutomlResultRow) =>
+                                sb.useAux
+                                  ? r.aux_score != null && Number.isFinite(Number(r.aux_score))
+                                    ? isMae
+                                      ? Math.abs(Number(r.aux_score)).toFixed(4)
+                                      : `${(Math.abs(Number(r.aux_score)) * 100).toFixed(1)}%`
+                                    : '—'
+                                  : `${(r.mean_score * 100).toFixed(1)}%`;
+                              const cellSecondary = (r: AutomlResultRow) =>
+                                sb.useAux
+                                  ? `${(r.mean_score * 100).toFixed(1)}%`
+                                  : r.aux_score != null && Number.isFinite(Number(r.aux_score))
+                                    ? isMae
+                                      ? Math.abs(Number(r.aux_score)).toFixed(4)
+                                      : `${(Math.abs(Number(r.aux_score)) * 100).toFixed(1)}%`
+                                    : null;
                               return (
                                 <div className="overflow-x-auto rounded-lg border border-slate-200 shadow-sm">
                                   <table className="w-full text-sm border-collapse min-w-[20rem]">
@@ -4071,20 +4225,24 @@ const App: React.FC = () => {
                                       <tr className="bg-slate-50/95 text-left border-b border-slate-200">
                                         <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-14">순위</th>
                                         <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500">모델</th>
-                                        <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500 text-right whitespace-nowrap">{primaryLabel}</th>
+                                        <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500 text-right whitespace-nowrap">{sb.activeLabel}</th>
                                         {showStdCol && (
                                           <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500 text-right whitespace-nowrap">Std (CV)</th>
                                         )}
-                                        {showAuxCol && (
-                                          <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500 text-right whitespace-nowrap">{auxLabel}</th>
+                                        {showSecondCol && secondColLabel && (
+                                          <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500 text-right whitespace-nowrap">{secondColLabel}</th>
                                         )}
                                       </tr>
                                     </thead>
                                     <tbody>
                                       {list.map((r, i) => {
-                                        const auxDisplay = r.aux_score != null
-                                          ? isMae ? Math.abs(r.aux_score).toFixed(4) : `${(Math.abs(r.aux_score) * 100).toFixed(1)}%`
-                                          : null;
+                                        const secondaryDisplay = cellSecondary(r);
+                                        const auxHover =
+                                          r.aux_score != null && Number.isFinite(Number(r.aux_score))
+                                            ? isMae
+                                              ? Math.abs(Number(r.aux_score)).toFixed(4)
+                                              : `${(Math.abs(Number(r.aux_score)) * 100).toFixed(2)}%`
+                                            : null;
                                         return (
                                           <tr
                                             key={r.model}
@@ -4098,19 +4256,19 @@ const App: React.FC = () => {
                                                 <span className="font-semibold text-slate-300 mb-0.5">{r.model}</span>
                                                 <span>{primaryLabel}: <strong>{(r.mean_score * 100).toFixed(2)}%</strong></span>
                                                 {r.std_score != null && <span>Std (CV): <strong>±{(r.std_score * 100).toFixed(2)}%</strong></span>}
-                                                {auxLabel && auxDisplay && <span>{auxLabel}: <strong>{auxDisplay}</strong></span>}
+                                                {auxLabel && auxHover && <span>{auxLabel}: <strong>{auxHover}</strong></span>}
                                                 <div className="absolute bottom-full left-3 border-4 border-transparent border-b-slate-800" />
                                               </div>
                                             </td>
-                                            <td className="px-3 py-2.5 align-middle text-right tabular-nums">{(r.mean_score * 100).toFixed(1)}%</td>
+                                            <td className="px-3 py-2.5 align-middle text-right tabular-nums">{cellActive(r)}</td>
                                             {showStdCol && (
                                               <td className="px-3 py-2.5 align-middle text-right tabular-nums text-slate-600">
                                                 {r.std_score != null ? `±${(r.std_score * 100).toFixed(1)}` : '—'}
                                               </td>
                                             )}
-                                            {showAuxCol && (
+                                            {showSecondCol && secondColLabel && (
                                               <td className="px-3 py-2.5 align-middle text-right tabular-nums text-slate-600">
-                                                {auxDisplay ?? '—'}
+                                                {secondaryDisplay ?? '—'}
                                               </td>
                                             )}
                                           </tr>
@@ -4127,9 +4285,7 @@ const App: React.FC = () => {
                             {(automlResult.all_results ?? []).some(
                               (r) => (r.preprocessing_methods?.length ?? 0) > 0 || (r.visualization_methods?.length ?? 0) > 0
                             ) && (() => {
-                              const ranked = (automlResult.all_results ?? [])
-                                .slice()
-                                .sort((a, b) => b.mean_score - a.mean_score);
+                              const ranked = automlScoreboard.sorted;
                               return (
                                 <div className="pt-4 border-t border-slate-200/80">
                                   <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">모델별 추천</p>
@@ -4246,7 +4402,7 @@ const App: React.FC = () => {
                                 <div className="flex-1 min-w-0">
                                   <div className="flex items-center justify-between gap-2 mb-1">
                                     <h4 className="font-bold text-slate-800 text-sm sm:text-base truncate">
-                                      {fn?.nameKo ?? fn?.name}
+                                      {stripLatinAcronymParentheses(fn?.nameKo ?? fn?.name)}
                                     </h4>
                                     <span className="text-xs font-bold text-indigo-600 shrink-0">{(match.score * 100).toFixed(0)}%</span>
                                   </div>
@@ -4365,7 +4521,7 @@ const App: React.FC = () => {
                                 topMatchName: (() => {
                                   const top = [...analysisResult.matches].sort((a, b) => b.score - a.score)[0];
                                   const tf = top ? MES_ONTOLOGY.find((o) => o.id === top.functionId) : null;
-                                  return tf?.nameKo ?? tf?.name;
+                                  return stripLatinAcronymParentheses(tf?.nameKo ?? tf?.name);
                                 })(),
                                 profileFeatureNames: dataProfile?.features,
                               }}
@@ -4384,11 +4540,10 @@ const App: React.FC = () => {
                       </div>
 
                       <div className="pt-6 border-t border-slate-100">
-                        <h4 className="text-sm font-bold text-slate-800 mb-1 flex items-center gap-2">
+                        <h4 className="text-sm font-bold text-slate-800 mb-4 flex items-center gap-2">
                           <Zap className="w-4 h-4 text-amber-500" />
                           인사이트
                         </h4>
-                        <p className="text-xs text-slate-500 mb-4 leading-relaxed max-w-3xl">{INSIGHTS_SECTION_DESCRIPTION_KO}</p>
                         <div className="flex flex-col gap-2 max-w-3xl">
                           {analysisResult.augmentationSuggestions?.map((item, i) => {
                             const open = insightOpenIndex === i;
