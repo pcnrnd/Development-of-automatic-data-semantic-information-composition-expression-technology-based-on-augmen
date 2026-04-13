@@ -59,7 +59,8 @@ services:
       context: .
       dockerfile: deploy/Dockerfile.frontend
       args:
-        VITE_API_URL: /api
+        VITE_API_URL: ${VITE_API_URL:-/api}
+        VITE_AUTOML_MOCK: ${VITE_AUTOML_MOCK:-false}
     container_name: mes-ontology-frontend
     depends_on:
       backend:

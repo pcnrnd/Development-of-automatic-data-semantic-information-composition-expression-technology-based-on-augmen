@@ -9,7 +9,9 @@ RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 COPY app/frontend/ .
 
 ARG VITE_API_URL=/api
+ARG VITE_AUTOML_MOCK=false
 ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_AUTOML_MOCK=$VITE_AUTOML_MOCK
 
 RUN npm run build
 
