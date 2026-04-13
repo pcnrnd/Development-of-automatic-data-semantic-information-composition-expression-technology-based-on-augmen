@@ -54,8 +54,6 @@ function groupByCategory(ontology: MESFunction[]): Map<string, MESFunction[]> {
 
 interface OntologyVisualizerProps {
   embedded?: boolean;
-  /** 그래프 뷰 고정 높이(px). 온톨로지 탭처럼 큰 캔버스가 필요한 곳에서만 사용합니다. */
-  graphHeight?: number;
   /** 분석 결과로 매칭된 기능 ID 목록. 리스트/그래프에서 해당 항목을 강조 표시합니다. */
   highlightedFunctionIds?: string[];
   /** L3 결과 템플릿 목록. 그래프 뷰에서 템플릿 노드 및 Template→L2 엣지를 표시합니다. */
@@ -64,7 +62,7 @@ interface OntologyVisualizerProps {
   resultSummary?: ResultSummaryForPanel;
 }
 
-const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = false, graphHeight, highlightedFunctionIds, templates, resultSummary }) => {
+const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = false, highlightedFunctionIds, templates, resultSummary }) => {
   const [selectedNode, setSelectedNode] = useState<OntologySelectedNode | null>(null);
   const [viewMode, setViewMode] = useState<'graph' | 'list'>('graph');
   const [expanded, setExpanded] = useState<Record<string, boolean>>(() => {
@@ -124,7 +122,6 @@ const OntologyVisualizer: React.FC<OntologyVisualizerProps> = ({ embedded = fals
           onSelectNode={setSelectedNode}
           onSelectFunction={(fn) => setSelectedNode({ type: 'function', data: { fn } })}
           compact={embedded}
-          height={!embedded ? graphHeight : undefined}
           highlightedIds={highlightedFunctionIds}
           templates={templates}
         />

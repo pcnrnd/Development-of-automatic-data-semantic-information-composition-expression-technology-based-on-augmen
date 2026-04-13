@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import {
   ReactFlow,
@@ -96,14 +96,22 @@ function getTemplateVariant(
   return 'reference';
 }
 
+const CATEGORY_STYLE: Record<string, { bg: string; border: string; ring: string; text: string }> = {
+  Tracking:    { bg: 'bg-blue-50',    border: 'border-blue-300',    ring: 'ring-blue-100',    text: 'text-blue-700'    },
+  Quality:     { bg: 'bg-emerald-50', border: 'border-emerald-300', ring: 'ring-emerald-100', text: 'text-emerald-700' },
+  Maintenance: { bg: 'bg-amber-50',   border: 'border-amber-300',   ring: 'ring-amber-100',   text: 'text-amber-700'   },
+  Inventory:   { bg: 'bg-violet-50',  border: 'border-violet-300',  ring: 'ring-violet-100',  text: 'text-violet-700'  },
+  Production:  { bg: 'bg-rose-50',    border: 'border-rose-300',    ring: 'ring-rose-100',    text: 'text-rose-700'    },
+};
+
 const CategoryIcon = ({ category, size = 14 }: { category: string; size?: number }) => {
   switch (category) {
-    case 'Tracking': return <Network className="text-blue-500 shrink-0" style={{ width: size, height: size }} />;
-    case 'Quality': return <ShieldCheck className="text-emerald-500 shrink-0" style={{ width: size, height: size }} />;
-    case 'Maintenance': return <Settings className="text-amber-500 shrink-0" style={{ width: size, height: size }} />;
-    case 'Inventory': return <Package className="text-indigo-500 shrink-0" style={{ width: size, height: size }} />;
-    case 'Production': return <Activity className="text-rose-500 shrink-0" style={{ width: size, height: size }} />;
-    default: return <Database className="text-slate-500 shrink-0" style={{ width: size, height: size }} />;
+    case 'Tracking':    return <Network     className="text-blue-500 shrink-0"    style={{ width: size, height: size }} />;
+    case 'Quality':     return <ShieldCheck className="text-emerald-500 shrink-0" style={{ width: size, height: size }} />;
+    case 'Maintenance': return <Settings    className="text-amber-500 shrink-0"   style={{ width: size, height: size }} />;
+    case 'Inventory':   return <Package     className="text-violet-500 shrink-0"  style={{ width: size, height: size }} />;
+    case 'Production':  return <Activity    className="text-rose-500 shrink-0"    style={{ width: size, height: size }} />;
+    default:            return <Database    className="text-slate-500 shrink-0"   style={{ width: size, height: size }} />;
   }
 };
 
@@ -141,13 +149,14 @@ function CategoryNode({ data }: NodeProps<{ label: string; category: string; sho
   const target = data.targetPos ?? Position.Top;
   const source = data.sourcePos ?? Position.Bottom;
   const label = data.shortLabel ?? data.label;
+  const cs = CATEGORY_STYLE[data.category] ?? { bg: 'bg-slate-50', border: 'border-slate-300', ring: 'ring-slate-100', text: 'text-slate-700' };
   return (
-    <div className="relative w-[4.5rem] h-[4.5rem] rounded-full bg-white border-2 border-slate-300 shadow-md shadow-slate-200 ring-1 ring-slate-200 flex flex-col items-center justify-center cursor-pointer" title={data.label}>
+    <div className={`relative w-[4.5rem] h-[4.5rem] rounded-full border-2 shadow-md ring-1 flex flex-col items-center justify-center cursor-pointer ${cs.bg} ${cs.border} ${cs.ring}`} title={data.label}>
       <Handle type="target" position={target} className="!w-0 !h-0 !min-w-0 !min-h-0 !border-0 !opacity-0" />
       <Handle type="source" position={source} className="!w-0 !h-0 !min-w-0 !min-h-0 !border-0 !opacity-0" />
-      <span className="absolute -top-0.5 -right-0.5 text-[10px] font-semibold text-slate-400 bg-slate-100 rounded px-1">L1</span>
+      <span className={`absolute -top-0.5 -right-0.5 text-[10px] font-semibold rounded px-1 ${cs.text} ${cs.bg}`}>L1</span>
       <CategoryIcon category={data.category} size={20} />
-      <span className="font-bold text-slate-800 text-[13px] leading-tight mt-0.5 tracking-wide">{label}</span>
+      <span className={`font-bold text-[13px] leading-tight mt-0.5 tracking-wide ${cs.text}`}>{label}</span>
     </div>
   );
 }
@@ -163,10 +172,10 @@ function FunctionNode({ data, selected }: NodeProps<{ label: string; id: string;
       <div
         className={`relative w-16 h-16 rounded-full flex flex-col items-center justify-center cursor-pointer transition-all border-2 ${
           selected
-            ? 'bg-indigo-50 border-indigo-500 shadow-lg ring-2 ring-indigo-200'
+            ? 'bg-indigo-100 border-indigo-600 shadow-lg ring-[3px] ring-indigo-400'
             : highlighted
-              ? 'bg-indigo-50 border-indigo-500 shadow-md ring-2 ring-indigo-300'
-              : 'bg-white border-slate-300 shadow-sm hover:border-indigo-400 hover:bg-indigo-50/80 hover:shadow-md'
+              ? 'bg-indigo-50 border-indigo-400 shadow-md ring-2 ring-indigo-200'
+              : 'bg-white border-slate-200 shadow-sm hover:border-indigo-300 hover:bg-indigo-50/60 hover:shadow-md'
         }`}
       >
         <Handle type="target" position={target} className="!w-0 !h-0 !min-w-0 !min-h-0 !border-0 !opacity-0" />
@@ -192,39 +201,38 @@ function TemplateNode({
   templateVariant?: TemplateVariant;
 }>) {
   const v = data.templateVariant ?? 'reference';
-  const baseShell = 'bg-slate-100';
   const shell =
     v === 'analysisResult'
-      ? `${baseShell} border-emerald-600 ring-emerald-200/70 border-[3px]`
+      ? 'bg-emerald-100 border-emerald-600 ring-emerald-300/70 border-[3px]'
       : v === 'recommended'
-        ? `${baseShell} border-indigo-600 ring-indigo-200/70 border-[2.5px]`
+        ? 'bg-indigo-100 border-indigo-600 ring-indigo-300/70 border-[2.5px]'
         : v === 'matchLinked'
-          ? `${baseShell} border-sky-600 ring-sky-200/70 border-2 border-dashed`
-          : `${baseShell} border-slate-400 ring-slate-200/70 border-2`;
+          ? 'bg-sky-100 border-sky-600 ring-sky-300/70 border-2 border-dashed'
+          : 'bg-slate-100 border-slate-400 ring-slate-200/70 border-2';
   const icon =
     v === 'analysisResult'
-      ? 'text-emerald-900'
+      ? 'text-emerald-700'
       : v === 'recommended'
-        ? 'text-indigo-900'
+        ? 'text-indigo-700'
         : v === 'matchLinked'
-          ? 'text-sky-900'
-          : 'text-slate-700';
+          ? 'text-sky-700'
+          : 'text-slate-500';
   const badge =
     v === 'analysisResult'
-      ? 'text-emerald-800 bg-emerald-100'
+      ? 'text-emerald-800 bg-emerald-200'
       : v === 'recommended'
-        ? 'text-indigo-800 bg-indigo-100'
+        ? 'text-indigo-800 bg-indigo-200'
         : v === 'matchLinked'
-          ? 'text-sky-800 bg-sky-100'
-          : 'text-slate-700 bg-slate-100';
+          ? 'text-sky-800 bg-sky-200'
+          : 'text-slate-600 bg-slate-200';
   const caption =
     v === 'analysisResult'
-      ? 'text-emerald-800'
+      ? 'text-emerald-800 font-bold'
       : v === 'recommended'
-        ? 'text-indigo-800'
+        ? 'text-indigo-800 font-bold'
         : v === 'matchLinked'
-          ? 'text-sky-800'
-          : 'text-slate-700';
+          ? 'text-sky-800 font-semibold'
+          : 'text-slate-600';
   return (
     <div className="flex flex-col items-center gap-1" title={data.label}>
       <div
@@ -245,6 +253,13 @@ const nodeTypes: NodeTypes = {
   function: FunctionNode,
   template: TemplateNode,
 };
+
+const EDGE_COLORS = {
+  default:        '#94a3b8', // slate-400
+  analysisResult: '#059669', // emerald-600
+  recommended:    '#4f46e5', // indigo-600
+  matchLinked:    '#0284c7', // sky-600
+} as const;
 
 /** 방사형(원형) 레이아웃: 중앙 루트 → 1링 카테고리 → 2링 기능 → 3링 템플릿(선택). */
 function buildGraphElements(
@@ -314,7 +329,7 @@ function buildGraphElements(
       source: ROOT_ID,
       target: id,
       type: 'straight',
-      style: { stroke: '#94a3b8', strokeWidth: 1.5 },
+      style: { stroke: EDGE_COLORS.default, strokeWidth: 1.5 },
     });
   });
 
@@ -359,7 +374,7 @@ function buildGraphElements(
         source: catId,
         target: nid,
         type: 'straight',
-        style: { stroke: '#94a3b8', strokeWidth: 1.5 },
+        style: { stroke: EDGE_COLORS.default, strokeWidth: 1.5 },
       });
     });
   });
@@ -427,12 +442,12 @@ function buildGraphElements(
             : 'reference';
       const edgeStyle =
         variant === 'analysisResult'
-          ? { stroke: '#059669', strokeWidth: 2.8, strokeDasharray: undefined, opacity: 0.95 }
+          ? { stroke: EDGE_COLORS.analysisResult, strokeWidth: 2.8, strokeDasharray: undefined, opacity: 0.95 }
           : variant === 'recommended'
-            ? { stroke: '#4f46e5', strokeWidth: 2.3, strokeDasharray: undefined, opacity: 0.9 }
+            ? { stroke: EDGE_COLORS.recommended,    strokeWidth: 2.3, strokeDasharray: undefined, opacity: 0.9  }
             : variant === 'matchLinked'
-              ? { stroke: '#0284c7', strokeWidth: 2.0, strokeDasharray: '4 3', opacity: 0.82 }
-              : { stroke: '#94a3b8', strokeWidth: 1.5, strokeDasharray: '2 4', opacity: 0.65 };
+              ? { stroke: EDGE_COLORS.matchLinked,  strokeWidth: 2.0, strokeDasharray: '4 3',     opacity: 0.82 }
+              : { stroke: EDGE_COLORS.default,      strokeWidth: 1.5, strokeDasharray: '2 4',     opacity: 0.65 };
       edges.push({
         id: `e-${tplId}-${fid}`,
         source: tplId,
@@ -468,6 +483,30 @@ const OntologyGraph: React.FC<OntologyGraphProps> = ({
   recommendedTemplateIds,
 }) => {
   const fixedHeight = height != null;
+
+  // 컨테이너 폭을 실측해 4:3 비율로 높이를 동적 계산 (반응형)
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const minH = compact ? 300 : 420;
+  const maxHRatio = compact ? 0.56 : 0.80;
+  const [canvasHeight, setCanvasHeight] = useState<number>(minH);
+
+  const updateHeight = useCallback(() => {
+    const el = wrapperRef.current;
+    if (!el) return;
+    const w = el.getBoundingClientRect().width;
+    const computed = Math.round(w * (3 / 4));
+    const maxH = Math.round(window.innerHeight * maxHRatio);
+    setCanvasHeight(Math.min(Math.max(computed, minH), maxH));
+  }, [minH, maxHRatio]);
+
+  useEffect(() => {
+    if (fixedHeight) return;
+    updateHeight();
+    const ro = new ResizeObserver(updateHeight);
+    if (wrapperRef.current) ro.observe(wrapperRef.current);
+    return () => ro.disconnect();
+  }, [fixedHeight, updateHeight]);
+
   const { nodes: initialNodes, edges: initialEdges } = useMemo(
     () => buildGraphElements(MES_ONTOLOGY, highlightedIds, templates, recommendedTemplateIds),
     [highlightedIds, templates, recommendedTemplateIds]
@@ -512,15 +551,10 @@ const OntologyGraph: React.FC<OntologyGraphProps> = ({
   );
 
   return (
+    <div ref={wrapperRef} className="w-full">
     <div
-      className={cn(
-        'rounded-xl border border-slate-200 bg-gradient-to-b from-slate-50 to-slate-100/80 overflow-hidden shadow-sm flex flex-col',
-        !fixedHeight &&
-          (compact
-            ? 'min-h-[220px] h-[clamp(240px,42dvh,400px)] sm:min-h-[260px] sm:h-[clamp(260px,44dvh,440px)] lg:h-[min(380px,48dvh)]'
-            : 'min-h-[260px] h-[clamp(280px,48dvh,520px)] sm:min-h-[300px] sm:h-[clamp(300px,50dvh,560px)] lg:h-[min(520px,60dvh)] xl:h-[min(620px,68dvh)]'),
-      )}
-      style={fixedHeight ? { height } : undefined}
+      className="rounded-xl border border-slate-200 bg-gradient-to-b from-slate-50 to-slate-100/80 overflow-hidden shadow-sm flex flex-col w-full"
+      style={{ height: fixedHeight ? height : canvasHeight }}
     >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3 px-3 sm:px-4 py-2.5 border-b border-slate-200 bg-white/80 shrink-0">
         <div className="min-w-0">
@@ -531,13 +565,13 @@ const OntologyGraph: React.FC<OntologyGraphProps> = ({
         </div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[10px] text-slate-500 sm:justify-end w-full sm:w-auto sm:max-w-[min(100%,520px)]">
           <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-slate-700" /> Root</span>
-          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-white border-2 border-slate-300" /> Domain</span>
-          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-white border-2 border-slate-300" /> Function</span>
+          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-blue-50 border-2 border-blue-300" /> Domain (L1)</span>
+          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-white border-2 border-slate-300" /> Function (L2)</span>
           <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-indigo-50 border-2 border-indigo-500" /> 매칭 기능</span>
           <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-slate-100 border-2 border-slate-400" /> 참조 L3</span>
-          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-slate-100 border-2 border-sky-600 border-dashed" /> 매칭 연계 L3</span>
-          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-slate-100 border-[2.5px] border-indigo-600" /> 추천 L3</span>
-          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-slate-100 border-[3px] border-emerald-600" /> 분석 결과 L3</span>
+          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-sky-100 border-2 border-sky-600" style={{borderStyle:'dashed'}} /> 매칭 연계 L3</span>
+          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-indigo-100 border-[2.5px] border-indigo-600" /> 추천 L3</span>
+          <span className="flex items-center gap-1 shrink-0"><span className="w-2.5 h-2.5 rounded-full bg-emerald-100 border-[3px] border-emerald-600" /> 분석 결과 L3</span>
         </div>
       </div>
       <div className="relative flex-1 min-h-0 w-full">
@@ -563,6 +597,7 @@ const OntologyGraph: React.FC<OntologyGraphProps> = ({
           <Background gap={20} size={1} color="#cbd5e1" />
         </ReactFlow>
       </div>
+    </div>
     </div>
   );
 };

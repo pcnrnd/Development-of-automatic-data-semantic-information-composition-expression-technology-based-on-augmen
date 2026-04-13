@@ -163,7 +163,7 @@ export const REFERENCE_TEMPLATES: ResultTemplate[] = [
     modelName: 'RandomForest',
     modelPerformance: { accuracy: 0.912, f1Score: 0.898, precision: 0.905, recall: 0.891, trainingTime: '1m 45s' },
     preprocessingMethods: ['StandardScaler', '결측치 보간', '이상치 제거'],
-    visualizationMethods: ['시계열 흐름 차트', '산점도', '실제 vs 예측'],
+    visualizationMethods: ['시계열 흐름 차트', '산점도', '타깃·피처 관계'],
     dataUsageSummary: '생산 이력 12,450건 (2024.01~2024.06), 8개 공정 변수(라인ID·작업장·Lot·수량·시작/종료 시각 등). 샘플링률 100%, 학습/검증 8:2 분할 적용.',
   },
   {
@@ -209,7 +209,7 @@ export const REFERENCE_TEMPLATES: ResultTemplate[] = [
     modelName: 'GradientBoosting',
     modelPerformance: { accuracy: 0.934, f1Score: 0.921, precision: 0.928, recall: 0.914, trainingTime: '4m 15s' },
     preprocessingMethods: ['StandardScaler', '결측치 보간', '이상치 제거', '시계열 윈도우'],
-    visualizationMethods: ['특성 추세', '잔차 플롯', '실제 vs 예측'],
+    visualizationMethods: ['특성 추세', '잔차 플롯', '타깃·피처 관계'],
     dataUsageSummary: '설비 센서 데이터 45,000건 (15개 채널, 1분 간격, 약 2일치). 진동·온도·전류 등 12개 특징 사용. 고장 라벨 320건 포함, 24시간 전 예측 타깃으로 활용.',
   },
   {
@@ -220,7 +220,7 @@ export const REFERENCE_TEMPLATES: ResultTemplate[] = [
     modelName: 'XGBoost',
     modelPerformance: { rmse: 18.2, trainingTime: '5m 40s' },
     preprocessingMethods: ['시계열 윈도우', '특성 추출', 'StandardScaler', '결측치 보간'],
-    visualizationMethods: ['RUL 추세선', '위험도 점수', '실제 vs 예측'],
+    visualizationMethods: ['RUL 추세선', '위험도 점수', '타깃·피처 관계'],
     dataUsageSummary: '베어링/모터 센서 62,000건, 14개 채널. 고장 시점까지 거리(RUL) 라벨 180건, 회귀 타깃으로 활용.',
   },
   // --- F004: Dynamic Scheduling (1~2개) ---
@@ -312,7 +312,7 @@ export const REFERENCE_TEMPLATES: ResultTemplate[] = [
     modelName: 'LightGBM',
     modelPerformance: { accuracy: 0.885, f1Score: 0.871, precision: 0.879, recall: 0.863, trainingTime: '1m 55s' },
     preprocessingMethods: ['달성률/지연일 계산', 'StandardScaler', '카테고리 인코딩'],
-    visualizationMethods: ['달성률 분포', '지연 원인 파레토', '실제 vs 예측'],
+    visualizationMethods: ['달성률 분포', '지연 원인 파레토', '타깃·피처 관계'],
     dataUsageSummary: '오더 4,500건 (6개월), 8개 변수(오더·품목·계획/실적·지연일·원인 등). 지연 여부·지연일 라벨, 8:2 분할.',
   },
   // --- F008: Maintenance Scheduling (1~2개) ---
@@ -347,7 +347,7 @@ export const REFERENCE_TEMPLATES: ResultTemplate[] = [
     modelName: 'RandomForest',
     modelPerformance: { accuracy: 0.904, f1Score: 0.891, precision: 0.898, recall: 0.884, trainingTime: '2m 35s' },
     preprocessingMethods: ['StandardScaler', '결측치 보간', '이상치 IQR', '롤링 평균'],
-    visualizationMethods: ['시계열 추세', 'Lot별 소비량', '실제 vs 예측'],
+    visualizationMethods: ['시계열 추세', 'Lot별 소비량', '타깃·피처 관계'],
     dataUsageSummary: '자재 소비 이력 18,200건 (2024.01~2024.04), 9개 변수(Lot·자재코드·수량·단위·작업장·시각 등). 품목 120종, 배치 단위 집계 적용.',
   },
   {

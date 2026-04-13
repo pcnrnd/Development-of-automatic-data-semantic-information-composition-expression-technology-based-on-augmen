@@ -59,6 +59,7 @@ import {
   type OntologySelectedNode,
   type ResultTemplate,
 } from './types';
+import { buildColumnExplorationPreview } from './utils/preprocPreview';
 
 /** 산업별 데모용 프로파일 (업로드 없을 때 추천 결과가 산업에 따라 달라지도록) */
 function getMockProfileForIndustry(industry: IndustryType): DataProfile {
@@ -1073,11 +1074,16 @@ const App: React.FC = () => {
       task: 'classification',
       scoring: 'accuracy',
       all_results: [
-        { model: 'RandomForest', mean_score: 0.92 },
-        { model: 'XGBoost', mean_score: 0.89 },
-        { model: 'LightGBM', mean_score: 0.87 },
-        { model: 'LogisticRegression', mean_score: 0.82 },
-        { model: 'SVM', mean_score: 0.79 },
+        { model: 'HistGradientBoosting', mean_score: 0.93, std_score: 0.01 },
+        { model: 'RandomForest', mean_score: 0.92, std_score: 0.02 },
+        { model: 'ExtraTrees', mean_score: 0.91, std_score: 0.02 },
+        { model: 'GradientBoosting', mean_score: 0.89, std_score: 0.02 },
+        { model: 'AdaBoost', mean_score: 0.86, std_score: 0.03 },
+        { model: 'LogisticRegression', mean_score: 0.82, std_score: 0.03 },
+        { model: 'SVC', mean_score: 0.80, std_score: 0.03 },
+        { model: 'KNN', mean_score: 0.78, std_score: 0.04 },
+        { model: 'DecisionTree', mean_score: 0.74, std_score: 0.05 },
+        { model: 'KNN_k3', mean_score: 0.73, std_score: 0.05 },
       ],
       preprocessing_methods: DEFAULT_PREPROCESSING_METHODS,
       visualization_methods: DEFAULT_VISUALIZATION_METHODS,
@@ -1374,14 +1380,14 @@ const App: React.FC = () => {
     return set;
   }, [dataPreview]);
 
-  /** 컬럼 탐색: 선택된 컬럼의 값 분포를 계산 (시계열 감지·분류 여부 반영) */
+  /** 컬럼 탐색: 선택된 컬럼의 값 분포를 계산 (시계열 감지·분류 여부 반영). 전처리 탭의 결측·이상치·스케일 설정을 차트 데이터에 반영합니다. */
   const columnAnalysisData = useMemo(() => {
     if (!dataPreview || !analysisColumn) return null;
     const colIdx = dataPreview.headers.indexOf(analysisColumn);
     const targetIdx = dataPreview.headers.length - 1;
     if (colIdx < 0) return null;
 
-    // 시계열 컬럼 탐지: 타겟 제외 헤더 중 첫 번째 시계열 컬럼 인덱스
+    // 시계열 컬럼 탐지: 타겟 제외 헤더 중 첫 번째 시계열 컬럼 인덱스 (원본 미리보기 기준 — 변환으로 날짜 패턴이 깨지지 않게)
     const timeColIdx = dataPreview.headers.slice(0, targetIdx).findIndex((h, i) =>
       isTimeSeriesColumn(h, dataPreview.rows.map((r) => r[i]))
     );
@@ -1404,17 +1410,22 @@ const App: React.FC = () => {
       ? Array.from(new Set(dataPreview.rows.map((r) => r[targetIdx]).filter((v) => v !== '')))
       : [];
     const activeClasses = analysisClassFilter.length > 0 ? analysisClassFilter : allClasses;
-    const filteredRows = isClassificationTask && activeClasses.length > 0
+    const filteredOriginalRows = isClassificationTask && activeClasses.length > 0
       ? dataPreview.rows.filter((r) => activeClasses.includes(r[targetIdx]) || r[targetIdx] === '')
       : dataPreview.rows;
 
-    const colValues = filteredRows.map((r) => r[colIdx]);
+    const explorationRows = buildColumnExplorationPreview(
+      { headers: dataPreview.headers, rows: filteredOriginalRows },
+      preprocConfig
+    ).rows;
+
+    const colValues = explorationRows.map((r) => r[colIdx]);
     const isNumeric = !selectedIsTimeSeries &&
       colValues.filter((v) => v !== '').every((v) => !Number.isNaN(Number(v)));
 
     // X축이 수치형인지 여부 (산점도에서 실제 수치값으로 사용 가능)
     const isXNumeric = customXColIdx >= 0
-      ? filteredRows.map((r) => r[customXColIdx]).filter((v) => v !== '').every((v) => !Number.isNaN(Number(v)))
+      ? explorationRows.map((r) => r[customXColIdx]).filter((v) => v !== '').every((v) => !Number.isNaN(Number(v)))
       : false;
 
     // x축에 시간값 or 사용자 지정 컬럼이 있으면 라인 차트
@@ -1427,7 +1438,7 @@ const App: React.FC = () => {
     // X축으로 선택 가능한 컬럼 목록 (타겟·Y축 제외)
     const availableXCols = dataPreview.headers.slice(0, targetIdx).filter((h) => h !== analysisColumn);
 
-    // 다중 컬럼 오버레이: 라인 차트 + 수치형 컬럼일 때만 활성화
+    // 다중 컬럼 오버레이: 라인 차트 + 수치형 컬럼일 때만 활성화 (시계열 판별은 원본, 수치 판별은 전처리 반영 행)
     const validExtraCols = useLineChart && isNumeric
       ? extraColumns.filter((c) => {
           if (c === analysisColumn) return false;
@@ -1435,7 +1446,7 @@ const App: React.FC = () => {
           const idx = dataPreview.headers.indexOf(c);
           if (idx < 0 || idx >= targetIdx) return false;
           if (isTimeSeriesColumn(c, dataPreview.rows.map((r) => r[idx]))) return false;
-          const vals = dataPreview.rows.map((r) => r[idx]).filter((v) => v !== '');
+          const vals = explorationRows.map((r) => r[idx]).filter((v) => v !== '');
           return vals.length > 0 && vals.every((v) => !Number.isNaN(Number(v)));
         })
       : [];
@@ -1449,7 +1460,7 @@ const App: React.FC = () => {
           if (h === xColumn) return false;  // X축 컬럼 제외
           const hIdx = dataPreview.headers.indexOf(h);
           if (isTimeSeriesColumn(h, dataPreview.rows.map((r) => r[hIdx]))) return false;
-          const vals = dataPreview.rows.map((r) => r[hIdx]).filter((v) => v !== '');
+          const vals = explorationRows.map((r) => r[hIdx]).filter((v) => v !== '');
           return vals.length > 0 && vals.every((v) => !Number.isNaN(Number(v)));
         })
       : [];
@@ -1461,7 +1472,7 @@ const App: React.FC = () => {
       chartData = [];
     } else if (isMultiCol) {
       // 다중 컬럼 라인 차트: 각 행 = x 포인트, 각 컬럼 = 별도 라인
-      chartData = filteredRows.map((row, i) => {
+      chartData = explorationRows.map((row, i) => {
         const entry: Record<string, string | number | null> = { name: xLabel(row, i) };
         allSelectedCols.forEach((col) => {
           const idx = dataPreview.headers.indexOf(col);
@@ -1472,7 +1483,7 @@ const App: React.FC = () => {
     } else if (isNumeric) {
       if (isClassificationTask && allClasses.length > 0) {
         // 시계열+분류: 클래스별 라인 (x=시간, 각 라인=클래스)
-        chartData = filteredRows.map((r, i) => {
+        chartData = explorationRows.map((r, i) => {
           const entry: Record<string, string | number | null> = {
             name: xLabel(r, i),
             _xVal: isXNumeric ? (r[customXColIdx] === '' ? null : Number(r[customXColIdx])) : i,
@@ -1483,7 +1494,7 @@ const App: React.FC = () => {
         });
       } else {
         // 수치형 단일 라인 or 바
-        chartData = filteredRows.map((r, i) => ({
+        chartData = explorationRows.map((r, i) => ({
           name: xLabel(r, i),
           value: r[colIdx] === '' ? null : Number(r[colIdx]),
           _xVal: isXNumeric ? (r[customXColIdx] === '' ? null : Number(r[customXColIdx])) : i,
@@ -1493,7 +1504,7 @@ const App: React.FC = () => {
       // 범주형: 고유값 빈도
       if (isClassificationTask && allClasses.length > 0) {
         const counts: Record<string, Record<string, number>> = {};
-        filteredRows.forEach((r) => {
+        explorationRows.forEach((r) => {
           const val = r[colIdx] || '(빈값)';
           const label = val.length > 10 ? val.slice(0, 10) + '…' : val;
           const cls = r[targetIdx] || '(없음)';
@@ -1503,7 +1514,7 @@ const App: React.FC = () => {
         chartData = Object.entries(counts).map(([val, cc]) => ({ name: val, ...cc }));
       } else {
         const counts: Record<string, number> = {};
-        filteredRows.forEach((r) => {
+        explorationRows.forEach((r) => {
           const val = r[colIdx] || '(빈값)';
           const label = val.length > 10 ? val.slice(0, 10) + '…' : val;
           counts[label] = (counts[label] ?? 0) + 1;
@@ -1526,7 +1537,7 @@ const App: React.FC = () => {
       isXNumeric,
       availableXCols,
     };
-  }, [dataPreview, analysisColumn, analysisClassFilter, isClassificationTask, extraColumns, xColumn]);
+  }, [dataPreview, preprocConfig, analysisColumn, analysisClassFilter, isClassificationTask, extraColumns, xColumn]);
 
   /** 라인 차트 전용: 미리보기 행이 적을 때 시간축 보간으로 점 밀도를 높입니다. */
   const columnExplorationLineData = useMemo(() => {
@@ -1622,7 +1633,6 @@ const App: React.FC = () => {
         {currentNav === 'ontology' && (
           <div key="ontology" className="p-4 sm:p-6 lg:p-8 min-w-0">
             <OntologyVisualizer
-              graphHeight={700}
               highlightedFunctionIds={analysisResult?.matches.map((m) => m.functionId)}
               templates={[
                 ...REFERENCE_TEMPLATES,
@@ -1845,11 +1855,11 @@ const App: React.FC = () => {
                         const relatedFns = template.recommendedFunctionIds
                           .map((fid) => MES_ONTOLOGY.find((f) => f.id === fid))
                           .filter(Boolean);
-                        // 적합도 = 필수 항목 매칭 수 (절대값 기반, 이전 버전 철학)
-                        const { matched, total, missing } = coverageDetail;
+                        // 유사도 = 데이터 항목과 템플릿 핵심 항목의 일치 비율
+                        const { matched, total } = coverageDetail;
                         const ratio = total > 0 ? matched / total : 0;
                         const suitabilityDots = ratio >= 0.75 ? 3 : ratio >= 0.5 ? 2 : 1;
-                        const suitabilityLabel = ratio >= 0.75 ? '적합' : ratio >= 0.5 ? '보통' : '참고';
+                        const suitabilityLabel = ratio >= 0.75 ? '높음' : ratio >= 0.5 ? '보통' : '낮음';
                         const suitabilityTextCls = ratio >= 0.75 ? 'text-indigo-600' : ratio >= 0.5 ? 'text-amber-600' : 'text-slate-500';
                         const suitabilitySegCls = ratio >= 0.75 ? 'bg-indigo-500' : ratio >= 0.5 ? 'bg-amber-400' : 'bg-slate-400';
                         const coverageBarCls = ratio >= 0.75 ? 'bg-emerald-400' : ratio >= 0.5 ? 'bg-amber-400' : 'bg-rose-400';
@@ -1875,7 +1885,7 @@ const App: React.FC = () => {
                             }`}
                             aria-label={`${template.name} 템플릿 선택`}
                           >
-                            {/* 순위 + 적합도 게이지 */}
+                            {/* 순위 + 템플릿명 */}
                             <div className="flex items-center justify-between">
                               <div className="flex items-center gap-2 min-w-0">
                                 <div className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
@@ -1883,7 +1893,9 @@ const App: React.FC = () => {
                                 }`}>
                                   {idx + 1}
                                 </div>
-                                <span className="text-sm font-semibold text-slate-800 leading-snug truncate">{template.name}</span>
+                                <div className="min-w-0">
+                                  <span className="text-sm font-semibold text-slate-800 leading-snug truncate block">{template.name}</span>
+                                </div>
                               </div>
                               <div className="flex items-center gap-1.5 shrink-0 ml-2">
                                 <div className="flex gap-0.5">
@@ -1891,7 +1903,7 @@ const App: React.FC = () => {
                                     <div key={i} className={`w-3 h-2 rounded-sm ${i < suitabilityDots ? suitabilitySegCls : 'bg-slate-100'}`} />
                                   ))}
                                 </div>
-                                <span className={`text-[10px] font-semibold ${suitabilityTextCls}`}>{suitabilityLabel}</span>
+                                <span className={`text-[10px] font-semibold ${suitabilityTextCls}`}>유사도 {suitabilityLabel}</span>
                                 <ChevronRight
                                   className={`w-3.5 h-3.5 transition-colors ${
                                     isSelected ? 'text-indigo-500' : 'text-slate-400 group-hover:text-indigo-500'
@@ -1899,15 +1911,6 @@ const App: React.FC = () => {
                                   aria-hidden
                                 />
                               </div>
-                            </div>
-                            <div
-                              className={`text-[10px] font-semibold rounded-full px-2.5 py-0.5 self-start border ${
-                                isSelected
-                                  ? 'text-indigo-700 bg-indigo-50 border-indigo-200'
-                                  : 'text-slate-500 bg-white border-slate-200 group-hover:text-indigo-600 group-hover:border-indigo-200'
-                              }`}
-                            >
-                              {isSelected ? '선택됨 (전처리 적용)' : '클릭해 적용'}
                             </div>
 
                             {/* 관련 MES 기능 뱃지 */}
@@ -1931,23 +1934,23 @@ const App: React.FC = () => {
                               <p className="text-xs text-slate-500 leading-relaxed">{template.summary}</p>
                             )}
 
-                            {/* 필수 항목 보유 (이전 버전의 절대값 표시 철학) */}
+                            {/* 유사도(커버리지) */}
                             {total > 0 && (
                               <div>
                                 <div className="flex items-center justify-between mb-1">
                                   <span className="flex items-center gap-1">
-                                    <span className="text-[10px] text-slate-500">필수 항목 보유</span>
+                                    <span className="text-[10px] text-slate-500">유사도</span>
                                     <span className="relative group inline-flex">
                                       <span className="w-3.5 h-3.5 rounded-full bg-slate-200 text-slate-500 text-[9px] font-bold flex items-center justify-center cursor-help leading-none select-none">?</span>
                                       <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-60 text-[10px] text-slate-600 bg-white border border-slate-200 rounded-md shadow-lg px-2.5 py-2 leading-relaxed z-20 hidden group-hover:block pointer-events-none whitespace-normal">
-                                        <span className="font-semibold text-slate-700 block mb-1">판정 기준</span>
-                                        <span className="block">이 템플릿의 핵심 함수가 요구하는 항목(예: 설비 ID, 타임스탬프, 측정값) 중 업로드한 데이터 컬럼에서 발견된 개수입니다.</span>
-                                        <span className="block mt-1">절대값(N/M)으로 표시되어 백분율보다 직관적입니다.</span>
+                                        <span className="font-semibold text-slate-700 block mb-1">유사도 산정 기준</span>
+                                        <span className="block">이 템플릿이 요구하는 핵심 항목(예: 설비 ID, 타임스탬프, 측정값) 중 업로드한 데이터 컬럼과 일치하는 항목 수로 유사도를 계산합니다.</span>
+                                        <span className="block mt-1">일치 항목이 많을수록 데이터 구조가 이 템플릿과 유사합니다. 우측 값은 일치 비율(%)입니다.</span>
                                       </span>
                                     </span>
                                   </span>
                                   <span className={`text-[10px] font-semibold ${coverageTextCls}`}>
-                                    {matched}/{total}개 보유
+                                    {(ratio * 100).toFixed(0)}%
                                   </span>
                                 </div>
                                 <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
@@ -1956,11 +1959,6 @@ const App: React.FC = () => {
                                     style={{ width: `${(matched / total) * 100}%` }}
                                   />
                                 </div>
-                                {missing.length > 0 && (
-                                  <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
-                                    보강하면 좋을 항목: {missing.join(' · ')}
-                                  </p>
-                                )}
                               </div>
                             )}
 
@@ -2626,7 +2624,9 @@ const App: React.FC = () => {
                     <div className="flex items-center gap-1.5">
                       <Search className="w-3.5 h-3.5 text-indigo-500" />
                       <span className="text-xs font-bold text-slate-700">컬럼 탐색</span>
-                      <span className="text-[10px] text-slate-400 hidden sm:inline">· 컬럼별 값 분포를 클래스 기준으로 확인</span>
+                      <span className="text-[10px] text-slate-400 hidden sm:inline">
+                        · 컬럼별 값 분포를 클래스 기준으로 확인 · 상단 전처리 설정(결측·이상치·스케일) 반영
+                      </span>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap justify-end">
                       {/* 시계열 컬럼 배지 */}
@@ -3982,7 +3982,7 @@ const App: React.FC = () => {
                       데모용 기본 데이터로 추천 중입니다. 다른 결과를 보려면 <strong>데이터 준비</strong>에서 CSV를 업로드한 뒤 다시 분석 실행해 보세요.
                     </p>
                   )}
-                  {/* AutoML 추천 리스트: 1~5등 순위, 시각화, 전처리 방법 */}
+                  {/* AutoML 추천 리스트: 전체 모델 순위, 시각화, 전처리 방법 */}
                   {(automlResult || analysisResult) && (
                     <div className="bg-white p-5 sm:p-6 rounded-xl border border-slate-200 shadow-sm">
                       <h3 className="text-base font-bold text-slate-800 mb-4 flex items-center gap-2">
@@ -3992,97 +3992,204 @@ const App: React.FC = () => {
 
                       {automlResult && (
                         <>
-                          {/* 1~5등 모델 순위 */}
+                          {/* 모델 점수 시각화 — 차트 툴팁에 지표 전체 표시 (모델 순위 테이블 위) */}
                           <div className="mb-5">
-                            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">모델 순위</p>
-                            <div className="flex flex-wrap gap-3">
-                              {(() => {
-                                const list = (automlResult.all_results ?? [{ model: automlResult.best_model, mean_score: automlResult.best_score }])
-                                  .slice()
-                                  .sort((a, b) => b.mean_score - a.mean_score)
-                                  .slice(0, 5);
-                                const rankStyle = [
-                                  'bg-amber-100 text-amber-800 border-amber-200',
-                                  'bg-slate-100 text-slate-700 border-slate-200',
-                                  'bg-orange-100 text-orange-700 border-orange-200',
-                                  'bg-slate-50 text-slate-600 border-slate-200',
-                                  'bg-slate-50 text-slate-600 border-slate-200',
-                                ];
-                                return list.map((r, i) => (
-                                  <div
-                                    key={r.model}
-                                    className={`flex items-center gap-2 px-4 py-2.5 rounded-lg border ${rankStyle[i]}`}
-                                  >
-                                    <span className="text-sm font-bold">{(i + 1)}등</span>
-                                    <span className="font-semibold text-sm">{r.model}</span>
-                                    <span className="text-xs opacity-90">{(r.mean_score * 100).toFixed(1)}%</span>
+                            {(() => {
+                              const primaryLabel = automlResult.scoring === 'accuracy' ? 'Accuracy' : automlResult.scoring === 'r2' ? 'R²' : (automlResult.scoring ?? 'Score');
+                              const auxLabel = automlResult.aux_scoring === 'f1_weighted' ? 'F1 (weighted)' : automlResult.aux_scoring === 'neg_mean_absolute_error' ? 'MAE' : (automlResult.aux_scoring ?? null);
+                              const isMae = automlResult.aux_scoring === 'neg_mean_absolute_error';
+                              const resultsMap = new Map((automlResult.all_results ?? []).map(r => [r.model, r]));
+                              const chartData = (automlResult.all_results ?? [{ model: automlResult.best_model, mean_score: automlResult.best_score }])
+                                .slice()
+                                .sort((a, b) => b.mean_score - a.mean_score)
+                                .map((r) => ({ name: r.model, fullScore: r.mean_score * 100 }));
+                              return (
+                                <>
+                                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">모델별 점수 — {primaryLabel}</p>
+                                  <div className="w-full min-h-[10rem]" style={{ height: `clamp(10rem, ${Math.max(10, (automlResult.all_results?.length ?? 5) * 2.2)}rem, 28rem)` }}>
+                                    <ResponsiveContainer width="100%" height="100%">
+                                      <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 8, left: 8, bottom: 4 }}>
+                                        <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 10 }} tickFormatter={(v) => `${v.toFixed(0)}%`} />
+                                        <YAxis type="category" dataKey="name" width={130} tick={{ fontSize: 11 }} />
+                                        <Tooltip
+                                          content={({ active, payload }) => {
+                                            if (!active || !payload?.length) return null;
+                                            const modelName = payload[0]?.payload?.name as string;
+                                            const r = resultsMap.get(modelName);
+                                            if (!r) return null;
+                                            const auxVal = r.aux_score != null
+                                              ? isMae ? Math.abs(r.aux_score).toFixed(4) : `${(Math.abs(r.aux_score) * 100).toFixed(2)}%`
+                                              : null;
+                                            return (
+                                              <div className="bg-slate-800 text-white text-xs rounded-lg px-3 py-2 shadow-lg flex flex-col gap-1">
+                                                <span className="font-semibold text-slate-300">{modelName}</span>
+                                                <span>{primaryLabel}: <strong>{(r.mean_score * 100).toFixed(2)}%</strong></span>
+                                                {r.std_score != null && <span>Std (CV): <strong>±{(r.std_score * 100).toFixed(2)}%</strong></span>}
+                                                {auxLabel && auxVal && <span>{auxLabel}: <strong>{auxVal}</strong></span>}
+                                              </div>
+                                            );
+                                          }}
+                                        />
+                                        <Bar dataKey="fullScore" radius={[0, 4, 4, 0]} name={primaryLabel}>
+                                          {chartData.map((_, i) => (
+                                            <Cell key={i} fill={['#4f46e5', '#6366f1', '#818cf8', '#a5b4fc', '#c7d2fe', '#e0e7ff', '#f1f5f9', '#94a3b8', '#cbd5e1', '#e2e8f0'][i] ?? '#94a3b8'} />
+                                          ))}
+                                        </Bar>
+                                      </BarChart>
+                                    </ResponsiveContainer>
                                   </div>
-                                ));
-                              })()}
-                            </div>
+                                </>
+                              );
+                            })()}
                           </div>
 
-                          {/* 모델 점수 시각화 */}
-                          <div className="mb-5">
-                            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">모델별 점수</p>
-                            <div className="w-full min-h-[10rem] h-[clamp(10rem,28dvh,15rem)]">
-                              <ResponsiveContainer width="100%" height="100%">
-                                <BarChart
-                                  data={(automlResult.all_results ?? [{ model: automlResult.best_model, mean_score: automlResult.best_score }])
-                                    .slice()
-                                    .sort((a, b) => b.mean_score - a.mean_score)
-                                    .map((r) => ({ name: r.model, score: (r.mean_score * 100).toFixed(1), fullScore: r.mean_score * 100 }))}
-                                  layout="vertical"
-                                  margin={{ top: 4, right: 8, left: 8, bottom: 4 }}
-                                >
-                                  <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 10 }} />
-                                  <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 11 }} />
-                                  <Tooltip formatter={(v: number) => [`${v.toFixed(1)}%`, '점수']} />
-                                  <Bar dataKey="fullScore" fill="#6366f1" radius={[0, 4, 4, 0]} name="점수">
-                                    {((automlResult.all_results ?? [{ model: automlResult.best_model, mean_score: automlResult.best_score }])
-                                      .slice()
-                                      .sort((a, b) => b.mean_score - a.mean_score))
-                                      .map((_, i) => (
-                                        <Cell key={i} fill={['#4f46e5', '#6366f1', '#818cf8', '#a5b4fc', '#c7d2fe'][i] ?? '#94a3b8'} />
-                                      ))}
-                                  </Bar>
-                                </BarChart>
-                              </ResponsiveContainer>
+                          {/* 모델 순위 표 + 모델별 전처리·시각화 테이블을 한 카드로 묶음 */}
+                          <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50/40 p-4 sm:p-5 space-y-5">
+                            <div>
+                              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">모델 순위</p>
+                              {(() => {
+                              const list = (automlResult.all_results ?? [{ model: automlResult.best_model, mean_score: automlResult.best_score }])
+                                .slice()
+                                .sort((a, b) => b.mean_score - a.mean_score);
+                              const primaryLabel = automlResult.scoring === 'accuracy' ? 'Accuracy' : automlResult.scoring === 'r2' ? 'R²' : (automlResult.scoring ?? 'Score');
+                              const auxLabel = automlResult.aux_scoring === 'f1_weighted' ? 'F1 (weighted)' : automlResult.aux_scoring === 'neg_mean_absolute_error' ? 'MAE' : (automlResult.aux_scoring ?? null);
+                              const isMae = automlResult.aux_scoring === 'neg_mean_absolute_error';
+                              const showStdCol = list.some((r) => r.std_score != null);
+                              const showAuxCol = Boolean(auxLabel) && list.some((r) => r.aux_score != null);
+                              const rowClass = (i: number) =>
+                                [
+                                  'bg-amber-50/90 text-amber-900 border-l-2 border-amber-300',
+                                  'bg-slate-50 text-slate-800 border-l-2 border-slate-300',
+                                  'bg-orange-50/90 text-orange-900 border-l-2 border-orange-300',
+                                  'bg-white text-slate-700',
+                                  'bg-white text-slate-700',
+                                ][i] ?? 'bg-white text-slate-600';
+                              return (
+                                <div className="overflow-x-auto rounded-lg border border-slate-200 shadow-sm">
+                                  <table className="w-full text-sm border-collapse min-w-[20rem]">
+                                    <thead>
+                                      <tr className="bg-slate-50/95 text-left border-b border-slate-200">
+                                        <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500 w-14">순위</th>
+                                        <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500">모델</th>
+                                        <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500 text-right whitespace-nowrap">{primaryLabel}</th>
+                                        {showStdCol && (
+                                          <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500 text-right whitespace-nowrap">Std (CV)</th>
+                                        )}
+                                        {showAuxCol && (
+                                          <th scope="col" className="px-3 py-2.5 text-xs font-semibold text-slate-500 text-right whitespace-nowrap">{auxLabel}</th>
+                                        )}
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {list.map((r, i) => {
+                                        const auxDisplay = r.aux_score != null
+                                          ? isMae ? Math.abs(r.aux_score).toFixed(4) : `${(Math.abs(r.aux_score) * 100).toFixed(1)}%`
+                                          : null;
+                                        return (
+                                          <tr
+                                            key={r.model}
+                                            className={`group relative border-b border-slate-100 last:border-b-0 transition-colors hover:bg-slate-50/80 ${rowClass(i)}`}
+                                          >
+                                            <td className="px-3 py-2.5 align-middle font-bold tabular-nums">{i + 1}위</td>
+                                            <td className="px-3 py-2.5 align-middle font-semibold relative overflow-visible z-0 group-hover:z-10">
+                                              <span className="inline-block">{r.model}</span>
+                                              {/* 행 호버 시 지표 상세 */}
+                                              <div className="pointer-events-none absolute left-0 top-full mt-1 hidden group-hover:flex flex-col gap-0.5 bg-slate-800 text-white text-xs rounded-lg px-3 py-2 whitespace-nowrap shadow-lg z-20">
+                                                <span className="font-semibold text-slate-300 mb-0.5">{r.model}</span>
+                                                <span>{primaryLabel}: <strong>{(r.mean_score * 100).toFixed(2)}%</strong></span>
+                                                {r.std_score != null && <span>Std (CV): <strong>±{(r.std_score * 100).toFixed(2)}%</strong></span>}
+                                                {auxLabel && auxDisplay && <span>{auxLabel}: <strong>{auxDisplay}</strong></span>}
+                                                <div className="absolute bottom-full left-3 border-4 border-transparent border-b-slate-800" />
+                                              </div>
+                                            </td>
+                                            <td className="px-3 py-2.5 align-middle text-right tabular-nums">{(r.mean_score * 100).toFixed(1)}%</td>
+                                            {showStdCol && (
+                                              <td className="px-3 py-2.5 align-middle text-right tabular-nums text-slate-600">
+                                                {r.std_score != null ? `±${(r.std_score * 100).toFixed(1)}` : '—'}
+                                              </td>
+                                            )}
+                                            {showAuxCol && (
+                                              <td className="px-3 py-2.5 align-middle text-right tabular-nums text-slate-600">
+                                                {auxDisplay ?? '—'}
+                                              </td>
+                                            )}
+                                          </tr>
+                                        );
+                                      })}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              );
+                            })()}
                             </div>
-                          </div>
 
-                          {/* 전처리 방법 · 시각화 방법 (나란히) */}
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                            {(automlResult.preprocessing_methods?.length ?? 0) > 0 && (
-                              <div>
-                                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">전처리 방법</p>
-                                <ul className="flex flex-wrap gap-2">
-                                  {automlResult.preprocessing_methods!.map((method, i) => (
-                                    <li
-                                      key={i}
-                                      className="px-3 py-1.5 bg-slate-100 text-slate-700 text-xs font-medium rounded-lg border border-slate-200"
-                                    >
-                                      {method}
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            )}
-                            {((automlResult.visualization_methods ?? []).length > 0) && (
-                              <div>
-                                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">시각화 방법</p>
-                                <ul className="flex flex-wrap gap-2">
-                                  {(automlResult.visualization_methods ?? []).map((method, i) => (
-                                    <li
-                                      key={i}
-                                      className="px-3 py-1.5 bg-slate-100 text-slate-700 text-xs font-medium rounded-lg border border-slate-200"
-                                    >
-                                      {method}
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            )}
+                            {/* 모델 순위별 전처리·시각화 추천 테이블 */}
+                            {(automlResult.all_results ?? []).some(
+                              (r) => (r.preprocessing_methods?.length ?? 0) > 0 || (r.visualization_methods?.length ?? 0) > 0
+                            ) && (() => {
+                              const ranked = (automlResult.all_results ?? [])
+                                .slice()
+                                .sort((a, b) => b.mean_score - a.mean_score);
+                              return (
+                                <div className="pt-4 border-t border-slate-200/80">
+                                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">모델별 추천</p>
+                                  <div className="overflow-x-auto rounded-lg border border-slate-200 shadow-sm">
+                                    <table className="w-full text-xs border-collapse min-w-[36rem]">
+                                      <colgroup>
+                                        <col style={{ width: '6%' }} />
+                                        <col style={{ width: '18%' }} />
+                                        <col style={{ width: '38%' }} />
+                                        <col style={{ width: '38%' }} />
+                                      </colgroup>
+                                      <thead>
+                                        <tr className="text-left border-b border-slate-200">
+                                          <th scope="col" className="px-2 py-2.5 font-semibold text-slate-400 text-center bg-slate-50">순위</th>
+                                          <th scope="col" className="px-3 py-2.5 font-semibold text-slate-500 bg-slate-50">모델</th>
+                                          <th scope="col" className="px-3 py-2.5 font-semibold text-slate-600 bg-slate-50/90">전처리 방법</th>
+                                          <th scope="col" className="px-3 py-2.5 font-semibold text-slate-600 bg-slate-50/90 border-l border-slate-200/80">시각화 방법</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {ranked.map((r, i) => (
+                                          <tr key={r.model} className="border-b border-slate-100 last:border-b-0 align-top">
+                                            <td className="px-2 py-3 text-center font-bold tabular-nums text-slate-400 bg-slate-50/60">{i + 1}</td>
+                                            <td className="px-3 py-3 font-semibold text-slate-700 bg-slate-50/30">
+                                              {i === 0
+                                                ? <span className="inline-flex items-center gap-1"><span className="text-amber-400 text-[9px]">▶</span>{r.model}</span>
+                                                : r.model}
+                                            </td>
+                                            <td className="px-3 py-3 bg-slate-50/25">
+                                              {(r.preprocessing_methods?.length ?? 0) > 0 ? (
+                                                <ul className="flex flex-col gap-1.5">
+                                                  {r.preprocessing_methods!.map((m, mi) => (
+                                                    <li key={mi} className="flex items-start gap-1.5 text-slate-600 leading-snug font-normal">
+                                                      <span className="mt-[5px] w-1.5 h-1.5 rounded-full bg-slate-300/90 flex-shrink-0" />
+                                                      {m}
+                                                    </li>
+                                                  ))}
+                                                </ul>
+                                              ) : <span className="text-slate-300">—</span>}
+                                            </td>
+                                            <td className="px-3 py-3 bg-slate-50/25 border-l border-slate-100">
+                                              {(r.visualization_methods?.length ?? 0) > 0 ? (
+                                                <ul className="flex flex-col gap-1.5">
+                                                  {r.visualization_methods!.map((v, vi) => (
+                                                    <li key={vi} className="flex items-start gap-1.5 text-slate-600 leading-snug font-normal">
+                                                      <span className="mt-[5px] w-1.5 h-1.5 rounded-full bg-slate-300/90 flex-shrink-0" />
+                                                      {v}
+                                                    </li>
+                                                  ))}
+                                                </ul>
+                                              ) : <span className="text-slate-300">—</span>}
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              );
+                            })()}
                           </div>
                         </>
                       )}
