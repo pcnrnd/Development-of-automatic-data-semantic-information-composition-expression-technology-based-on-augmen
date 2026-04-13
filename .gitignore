@@ -22,6 +22,3 @@ processed_images
 .claude
 .cursor
 .env
-scripts
-config
-.githooks
