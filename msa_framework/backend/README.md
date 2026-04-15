@@ -1,8 +1,4 @@
-# Backend (FastAPI) - Industrial Data Gateway Demo
-
-## 목적
-- `frontend/` UI가 호출할 데모용 API를 제공합니다.
-- 상태는 **in-memory**라서 서버 재시작 시 초기화됩니다.
+# Backend (FastAPI) - Industrial Data Gateway
 
 ## 실행(로컬)
 의존성 설치:
