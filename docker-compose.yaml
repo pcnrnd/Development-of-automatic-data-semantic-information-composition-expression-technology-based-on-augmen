@@ -1,0 +1,108 @@
+services:
+  # ========== mes_ontology ==========
+  neo4j:
+    image: neo4j:latest
+    environment:
+      NEO4J_AUTH: neo4j/password
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    networks:
+      - shared-net
+    restart: unless-stopped
+
+  mes_backend:
+    build:
+      context: ./mes_ontology/app/backend
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8000"
+    environment:
+      - NEO4J_URI=bolt://neo4j:7687
+    depends_on:
+      - neo4j
+    networks:
+      - shared-net
+    restart: unless-stopped
+
+  mes_frontend:
+    build:
+      context: ./mes_ontology/app/frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - mes_backend
+    networks:
+      - shared-net
+    restart: unless-stopped
+
+  # ========== dataops ==========
+  dataops_backend:
+    build:
+      context: ./dataops/backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=false
+      - CORS_ORIGINS=["http://localhost:3002"]
+    networks:
+      - shared-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  dataops_frontend:
+    build:
+      context: ./dataops/frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3002:80"
+    depends_on:
+      dataops_backend:
+        condition: service_healthy
+    networks:
+      - shared-net
+    restart: unless-stopped
+
+  # ========== msa_framework ==========
+  msa_backend:
+    build:
+      context: ./msa_framework/backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./msa_framework/backend/.env
+    ports:
+      - "8002:8001"
+    networks:
+      - shared-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8001/docs\")' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  msa_frontend:
+    build:
+      context: ./msa_framework/frontend
+      dockerfile: Dockerfile
+      args:
+        FASTAPI_BASE_URL: http://msa_backend:8001
+    ports:
+      - "3001:3000"
+    depends_on:
+      msa_backend:
+        condition: service_healthy
+    networks:
+      - shared-net
+    restart: unless-stopped
+
+networks:
+  shared-net:
+    driver: bridge
