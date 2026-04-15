@@ -10,11 +10,11 @@ services:
     networks:
       - app-net
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/docs"]
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8001/docs\")' || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 10s
+      retries: 3
+      start_period: 5s
 
   frontend:
     build:
@@ -29,6 +29,7 @@ services:
         condition: service_healthy
     networks:
       - app-net
+    restart: unless-stopped
 
 networks:
   app-net:
