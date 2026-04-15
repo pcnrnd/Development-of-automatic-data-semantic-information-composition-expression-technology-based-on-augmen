@@ -1,0 +1,145 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Manrope:wght@400;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-headline: "Manrope", sans-serif;
+
+  --color-primary: #041627;
+  --color-primary-container: #1a2b3c;
+  --color-accent: #44d8f1;
+  --color-surface: #041627;
+  --color-surface-card: #1a2b3c;
+  /* 보조 텍스트·아이콘(이름은 legacy이나 UI에서 보조 글자색으로 사용) */
+  --color-surface-muted: #8b9099;
+  --color-text-dim: #c4c6cd;
+  --color-text-bright: #f7f9fb;
+}
+
+@layer base {
+  body {
+    @apply bg-primary text-text-dim font-sans antialiased;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+}
+
+/*
+ * 라이트 모드: #app-theme-root에만 .theme-light 적용 → 사이드바는 :root @theme(다크) 유지
+ */
+.theme-light {
+  --color-primary: #eef1f6;
+  --color-primary-container: #ffffff;
+  --color-accent: #0e7490;
+  --color-surface: #e4e9f0;
+  --color-surface-card: #ffffff;
+  --color-surface-muted: #64748b;
+  --color-text-dim: #475569;
+  --color-text-bright: #0f172a;
+  color-scheme: light;
+}
+
+.theme-light .blueprint-grid {
+  background-image: radial-gradient(rgba(15, 23, 42, 0.06) 1px, transparent 1px);
+}
+
+.theme-light .glass-panel {
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(20px);
+}
+
+.theme-light .kinetic-gradient {
+  background: linear-gradient(135deg, #f1f5f9 0%, #ffffff 100%);
+}
+
+.theme-light .flow-line {
+  background-image: linear-gradient(90deg, #0e7490 50%, transparent 50%);
+}
+
+/* Network Throughput: 패널만 frosted — 막대는 불투명 단일 스택 */
+.throughput-chart-panel {
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  background-color: color-mix(in srgb, var(--color-primary) 58%, transparent);
+  border: 1px solid color-mix(in srgb, white 12%, transparent);
+  background-image: linear-gradient(to top, rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+  background-size: 100% 25%;
+}
+
+.theme-light .throughput-chart-panel {
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  background-color: color-mix(in srgb, #c8d4e4 82%, rgba(255, 255, 255, 0.65));
+  border-color: rgba(15, 23, 42, 0.28);
+  background-image: linear-gradient(to top, rgba(15, 23, 42, 0.22) 1px, transparent 1px);
+  background-size: 100% 25%;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), inset 0 -1px 0 rgba(15, 23, 42, 0.06);
+}
+
+/* Egress 범례 점 — 라이트에서 밝은 회색 점이 사라지지 않도록 */
+.throughput-legend-egress-dot {
+  background-color: rgba(255, 255, 255, 0.22);
+}
+
+.theme-light .throughput-legend-egress-dot {
+  background-color: rgba(51, 65, 85, 0.85);
+}
+
+/* 처리량 막대: 컬럼당 하나 — 상단 Ingress / 하단 Egress 비율 스택(불투명) */
+.throughput-one-bar {
+  border: 1px solid color-mix(in srgb, white 14%, transparent);
+}
+
+.theme-light .throughput-one-bar {
+  border-color: rgba(15, 23, 42, 0.2);
+}
+
+.throughput-one-bar-recent {
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.35);
+}
+
+.theme-light .throughput-one-bar-recent {
+  box-shadow: 0 0 0 1px rgba(13, 148, 136, 0.42);
+}
+
+.throughput-stack-ingress {
+  background: linear-gradient(180deg, #7dd3fc, #0ea5e9);
+}
+
+.throughput-stack-egress {
+  background: linear-gradient(180deg, #a8b4c4, #64748b);
+}
+
+.theme-light .throughput-stack-ingress {
+  background: linear-gradient(180deg, #5eead4, #0f766e);
+}
+
+.theme-light .throughput-stack-egress {
+  background: linear-gradient(180deg, #94a3b8, #334155);
+}
+
+.throughput-chart-panel .group:hover .throughput-one-bar {
+  filter: brightness(1.07);
+}
+
+/* 배경 그리드: 대비를 낮춰 본문 가독성 우선 */
+.blueprint-grid {
+  background-image: radial-gradient(rgba(116, 119, 125, 0.055) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.glass-panel {
+  background: rgba(26, 43, 60, 0.85);
+  backdrop-filter: blur(20px);
+}
+
+.kinetic-gradient {
+  background: linear-gradient(135deg, #041627 0%, #1a2b3c 100%);
+}
+
+.flow-line {
+  background-image: linear-gradient(90deg, #44d8f1 50%, transparent 50%);
+  background-size: 15px 1px;
+}
