@@ -29,3 +29,35 @@ def get_environment() -> Literal["development", "production", "test"]:
     if env_lower in ("test", "testing"):
         return "test"
     return "development"
+
+
+def get_jwt_secret() -> str | None:
+    """JWT 서명용 비밀키. 미설정 시 토큰 발급/검증 비활성."""
+    raw = os.environ.get("JWT_SECRET")
+    return raw.strip() if raw and raw.strip() else None
+
+
+def get_jwt_algorithm() -> str:
+    """JWT 알고리즘 (기본 HS256)."""
+    return os.environ.get("JWT_ALGORITHM", "HS256").strip() or "HS256"
+
+
+def get_access_token_expire_minutes() -> int:
+    """액세스 토큰 만료(분). 1~1440."""
+    raw = os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
+    try:
+        return max(1, min(int(raw), 24 * 60))
+    except ValueError:
+        return 60
+
+
+def get_jwt_auth_username() -> str | None:
+    """password grant용 데모 사용자명 (선택)."""
+    raw = os.environ.get("JWT_AUTH_USERNAME")
+    return raw.strip() if raw and raw.strip() else None
+
+
+def get_jwt_auth_password() -> str | None:
+    """password grant용 데모 비밀번호 (선택)."""
+    raw = os.environ.get("JWT_AUTH_PASSWORD")
+    return raw.strip() if raw and raw.strip() else None

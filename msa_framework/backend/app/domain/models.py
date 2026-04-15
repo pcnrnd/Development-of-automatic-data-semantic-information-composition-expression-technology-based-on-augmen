@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, Field, model_validator
 
 
 class ServiceCategory(str, Enum):
@@ -124,3 +126,44 @@ class UpdateMicroserviceRequest(BaseModel):
     host: str | None = Field(None, description="서비스 호스트 (IP 또는 도메인)", max_length=255)
     port: int | None = Field(None, description="서비스 포트 (1-65535)", ge=1, le=65535)
     protocol: str | None = Field(None, description="프로토콜 (http 또는 https)", pattern="^(http|https)$")
+
+
+class AuthTokenRequest(BaseModel):
+    """JWT 발급 요청: api_key 또는 password grant."""
+
+    grant_type: Literal["api_key", "password"] = Field(
+        default="api_key",
+        description="api_key: 활성 API Key 문자열로 교환 / password: JWT_AUTH_* 환경 변수와 매칭",
+    )
+    api_key: str | None = Field(default=None, description="grant_type=api_key 일 때 전체 Key 문자열")
+    username: str | None = Field(default=None, description="grant_type=password 일 때 사용자명")
+    password: str | None = Field(default=None, description="grant_type=password 일 때 비밀번호")
+
+    @model_validator(mode="after")
+    def _validate_grant(self) -> AuthTokenRequest:
+        if self.grant_type == "api_key":
+            if not self.api_key or not self.api_key.strip():
+                raise ValueError("api_key grant에는 api_key 필드가 필요합니다")
+        else:
+            if not self.username or not self.username.strip():
+                raise ValueError("password grant에는 username 필드가 필요합니다")
+            if self.password is None or self.password == "":
+                raise ValueError("password grant에는 password 필드가 필요합니다")
+        return self
+
+
+class TokenResponse(BaseModel):
+    """OAuth2 유사 액세스 토큰 응답."""
+
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
+class AuthMeResponse(BaseModel):
+    """JWT 클레임 요약 (검증용 데모)."""
+
+    sub: str
+    typ: str
+    exp: int
+    iat: int

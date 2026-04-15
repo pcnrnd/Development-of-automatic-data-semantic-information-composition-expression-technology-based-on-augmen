@@ -314,6 +314,17 @@ class InMemoryStore:
             )
             return True
 
+    async def find_active_api_key_by_secret(self, raw_secret: str) -> ApiKey | None:
+        """활성 인증Key 중 secret과 일치하는 항목을 조회합니다."""
+        secret = raw_secret.strip()
+        if not secret:
+            return None
+        async with self._lock:
+            for k in self._api_keys.values():
+                if k.status == ApiKeyStatus.ACTIVE and k.key == secret:
+                    return k
+            return None
+
     # ========== 외부 API 서비스 관리 메서드 ==========
 
     async def list_external_services(self) -> list[ExternalApiService]:

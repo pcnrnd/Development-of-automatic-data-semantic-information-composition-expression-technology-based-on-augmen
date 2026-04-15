@@ -7,10 +7,16 @@ from __future__ import annotations
 
 import logging
 import traceback
+from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, status
+
+# backend/ 디렉터리의 .env 파일을 자동으로 로드 (없으면 무시)
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 from fastapi.exceptions import RequestValidationError
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
@@ -26,9 +32,9 @@ logger = logging.getLogger(__name__)
 def create_app() -> FastAPI:
     """FastAPI 애플리케이션 생성"""
     app = FastAPI(
-        title="Industrial Data Nexus API",
+        title="Industrial Data Gateway API",
         version="0.1.0",
-        description="Industrial Data Platform API for microservices observability",
+        description="Industrial Data Gateway API for microservices observability",
     )
 
     store = InMemoryStore()
@@ -121,6 +127,28 @@ def create_app() -> FastAPI:
                 "meta": None,
             },
         )
+
+    def custom_openapi() -> dict[str, Any]:
+        if app.openapi_schema:
+            return app.openapi_schema
+        openapi_schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
+        components = openapi_schema.setdefault("components", {})
+        schemes = components.setdefault("securitySchemes", {})
+        schemes["bearerAuth"] = {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "Authorization: Bearer <access_token>",
+        }
+        app.openapi_schema = openapi_schema
+        return app.openapi_schema
+
+    app.openapi = custom_openapi
 
     app.include_router(router)
     return app

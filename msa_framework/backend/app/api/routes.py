@@ -6,20 +6,32 @@ API 라우터 모듈
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
-from app.core.deps import get_store
+from app.core.config import (
+    get_access_token_expire_minutes,
+    get_jwt_algorithm,
+    get_jwt_auth_password,
+    get_jwt_auth_username,
+    get_jwt_secret,
+)
+from app.core.deps import decode_bearer_token_optional, get_store, require_jwt_payload
+from app.core.security import create_access_token
 from app.domain.models import (
     ApiError,
     ApiKey,
     ApiResponse,
+    AuthMeResponse,
+    AuthTokenRequest,
     CreateMicroserviceRequest,
     ExternalApiService,
     ExternalApiServiceStatus,
     InfraNode,
     Microservice,
+    TokenResponse,
     UpdateMicroserviceRequest,
 )
 from app.store.in_memory import InMemoryStore
@@ -341,6 +353,90 @@ async def list_events(
         raise err("INTERNAL_ERROR", f"이벤트 목록 조회 중 오류가 발생했습니다: {str(e)}", 500)
 
 
+# ========== Auth (JWT) ==========
+
+
+@router.post("/v1/auth/token", response_model=ApiResponse)
+async def issue_access_token(
+    body: AuthTokenRequest = Body(...),
+    store: InMemoryStore = Depends(get_store),
+) -> ApiResponse:
+    """
+    액세스 JWT 발급.
+
+    - **grant_type=api_key**: 활성 API Key 전체 문자열로 교환 (`api_key` 필드).
+    - **grant_type=password**: 환경 변수 `JWT_AUTH_USERNAME` / `JWT_AUTH_PASSWORD`와 일치할 때만 허용.
+    - 서버에 `JWT_SECRET`이 없으면 503.
+    """
+    secret = get_jwt_secret()
+    if not secret:
+        raise err(
+            "JWT_NOT_CONFIGURED",
+            "JWT_SECRET 환경 변수를 설정한 뒤 토큰을 발급할 수 있습니다.",
+            503,
+        )
+
+    algo = get_jwt_algorithm()
+    exp_min = get_access_token_expire_minutes()
+
+    try:
+        if body.grant_type == "api_key":
+            matched = await store.find_active_api_key_by_secret(body.api_key or "")
+            if matched is None:
+                raise err("INVALID_CREDENTIALS", "유효한 API Key가 아닙니다", 401)
+            token, expires_in = create_access_token(
+                matched.id,
+                "api_key",
+                secret=secret,
+                algorithm=algo,
+                expire_minutes=exp_min,
+            )
+            return ok(TokenResponse(access_token=token, expires_in=expires_in).model_dump())
+
+        demo_user = get_jwt_auth_username()
+        demo_pass = get_jwt_auth_password()
+        if not demo_user or not demo_pass:
+            raise err(
+                "PASSWORD_GRANT_DISABLED",
+                "password grant는 JWT_AUTH_USERNAME 및 JWT_AUTH_PASSWORD 설정 시에만 사용할 수 있습니다",
+                400,
+            )
+        if (body.username or "").strip() != demo_user or body.password != demo_pass:
+            raise err("INVALID_CREDENTIALS", "사용자명 또는 비밀번호가 올바르지 않습니다", 401)
+        token, expires_in = create_access_token(
+            demo_user,
+            "user",
+            secret=secret,
+            algorithm=algo,
+            expire_minutes=exp_min,
+        )
+        return ok(TokenResponse(access_token=token, expires_in=expires_in).model_dump())
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise err("INVALID_INPUT", str(e), 422) from e
+    except Exception as e:
+        logger.error(f"Error issuing token: {e}", exc_info=True)
+        raise err("INTERNAL_ERROR", f"토큰 발급 중 오류가 발생했습니다: {str(e)}", 500)
+
+
+@router.get("/v1/auth/me", response_model=ApiResponse)
+async def auth_me(jwt_payload: dict[str, Any] = Depends(require_jwt_payload)) -> ApiResponse:
+    """Bearer JWT 검증 데모: 클레임 요약을 반환합니다."""
+    try:
+        return ok(
+            AuthMeResponse(
+                sub=str(jwt_payload.get("sub", "")),
+                typ=str(jwt_payload.get("typ", "")),
+                exp=int(jwt_payload.get("exp", 0)),
+                iat=int(jwt_payload.get("iat", 0)),
+            ).model_dump()
+        )
+    except Exception as e:
+        logger.error(f"Error in auth/me: {e}", exc_info=True)
+        raise err("INTERNAL_ERROR", f"토큰 정보 조회 중 오류가 발생했습니다: {str(e)}", 500)
+
+
 # ========== Security & Access API 엔드포인트 ==========
 
 
@@ -595,13 +691,22 @@ async def update_service_status(
 async def invoke_external_service(
     service_id: str,
     x_api_key: str | None = Header(default=None, alias="x-api-key"),
+    jwt_payload: dict | None = Depends(decode_bearer_token_optional),
     store: InMemoryStore = Depends(get_store),
 ) -> ApiResponse:
-    """외부 API 서비스 호출(데모) - 차단/제한 집행 확인용"""
+    """
+    외부 API 서비스 호출(데모) - 차단/제한 집행 확인용.
+
+    - **Authorization: Bearer** JWT가 있으면 유효해야 하며, 제한 카운터 식별자로 `sub` 클레임을 사용합니다.
+    - JWT가 없으면 기존처럼 **x-api-key** 헤더(없으면 `anonymous`)를 사용합니다.
+    """
     if not service_id or not service_id.strip():
         raise err("INVALID_INPUT", "service_id는 비어있을 수 없습니다", 400)
 
-    api_key = (x_api_key or "anonymous").strip() or "anonymous"
+    if jwt_payload is not None:
+        api_key = f"jwt:{jwt_payload.get('sub', 'unknown')}"
+    else:
+        api_key = (x_api_key or "anonymous").strip() or "anonymous"
 
     try:
         services = await store.list_external_services()
