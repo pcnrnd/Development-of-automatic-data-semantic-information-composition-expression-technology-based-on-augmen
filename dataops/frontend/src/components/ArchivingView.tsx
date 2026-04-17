@@ -3,26 +3,76 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   Database,
   Play,
-  AlertTriangle,
   Filter,
   Loader2,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Archive,
+  HardDrive,
 } from 'lucide-react';
 import { Card, CardHeader, CardLabel, SectionHeader, ProgressBar, LabeledProgressBar, Chip, Metric } from './ui';
 
-const DEFAULT_HIVE_QUERY = `-- 덕산 공장 전동기 센서 데이터 조회 (deoksan_equipment)
+interface ArchiveRecord {
+  id: string;
+  jobId: string;
+  destination: string;
+  rowCount: number;
+  elapsed: number;
+  archivedAt: string;
+}
+
+const INITIAL_ARCHIVE_HISTORY: ArchiveRecord[] = [
+  { id: 'arc-1', jobId: 'PWR-ARC-77201', destination: 'HDFS 아카이브', rowCount: 86400, elapsed: 4820, archivedAt: '2021-04-01 00:00~24:00' },
+  { id: 'arc-2', jobId: 'PWR-ARC-77188', destination: 'HDFS 아카이브', rowCount: 86400, elapsed: 5130, archivedAt: '2021-03-31 00:00~24:00' },
+  { id: 'arc-3', jobId: 'PWR-ARC-77120', destination: 'Object Storage',    rowCount: 259200, elapsed: 11200, archivedAt: '2021-03-01~31 (월간)' },
+];
+
+interface StoredPipelineInstance {
+  id: string;
+  name: string;
+  sourceCount: number;
+  ruleCount: number;
+  destinationCount: number;
+  scheduleMode: 'streaming' | 'batch';
+  createdAt: string;
+}
+
+interface StoredSource {
+  id: string;
+  label: string;
+  sub: string;
+  tag: string;
+  active: boolean;
+}
+
+interface StoredDestination {
+  id: string;
+  label: string;
+  type: string;
+  active: boolean;
+}
+
+const DEFAULT_HIVE_QUERY = `-- 덕산공장 전력 품질 데이터 조회 (deoksan_equipment)
+-- 3상 전압(VoltR/S/T), 3상 전류(currR/S/T), 누전(Ground), 온도(PT100)
 SELECT
-  time, curr, currR, currS, currT,
-  Ground, PT100, Vibra,
-  Volt, VoltR, VoltS, VoltT
+  time,
+  VoltR, VoltS, VoltT,           -- 3상 전압 (정상: 220V ± 10%)
+  currR, currS, currT, curr,      -- 3상 전류 + 합산전류
+  Ground,                         -- 누전 전류 (임계값: 5A)
+  PT100, Vibra                    -- 권선 온도, 진동
 FROM sensors.deoksan_equipment
 WHERE dt = '2021-04-01'
-  AND PT100 > 60.0
+  AND (VoltR < 200.0 OR VoltS < 200.0 OR Ground > 5.0)
 PARTITION BY (dt, equipment_id)
 CLUSTER BY time
 LIMIT 100;`;
+
+const FALLBACK_JOBS = [
+  { id: 'PWR-JOB-88291', status: 'RUNNING',          color: 'bg-accent',    text: 'text-accent',    animate: true  },
+  { id: 'PWR-JOB-88295', status: 'In Queue',          color: 'bg-white/20',  text: 'text-text-dim',  animate: false },
+  { id: 'PWR-JOB-88280', status: 'Failed (Timeout)',  color: 'bg-red-500',   text: 'text-red-400',   animate: false },
+];
 
 interface QueryRow {
   time: string;
@@ -40,13 +90,56 @@ interface QueryResult {
 
 const rand = (min: number, max: number) => Math.floor(Math.random() * (max - min + 1)) + min;
 
-const MOCK_JOBS = [
-  { id: 'Job_ID_88291', status: '92% Completed',    color: 'bg-accent',    text: 'text-accent',    animate: true  },
-  { id: 'Job_ID_88295', status: 'In Queue',          color: 'bg-white/20',  text: 'text-text-dim',  animate: false },
-  { id: 'Job_ID_88280', status: 'Failed (Timeout)',  color: 'bg-red-500',   text: 'text-red-400',   animate: false },
-];
-
 const INITIAL_NODE_BARS = [42, 68, 82, 58, 91, 72, 48, 88];
+
+function readPipelineStorage() {
+  const instances = JSON.parse(localStorage.getItem('pipeline-storage-instances') || '[]') as StoredPipelineInstance[];
+  const sources = JSON.parse(localStorage.getItem('pipeline-storage-sources') || '[]') as StoredSource[];
+  const destinations = JSON.parse(localStorage.getItem('pipeline-storage-destinations') || '[]') as StoredDestination[];
+  return { instances, sources, destinations };
+}
+
+function buildJobsFromPipelines(instances: StoredPipelineInstance[]): Array<{ id: string; status: string; color: string; text: string; animate: boolean }> {
+  if (instances.length === 0) return FALLBACK_JOBS;
+  return instances.map((p) => {
+    const jobId = `JOB-${p.id.slice(-5).toUpperCase()}`;
+    const isStreaming = p.scheduleMode === 'streaming';
+    const status = isStreaming ? 'RUNNING' : 'SUCCEEDED';
+    const color = isStreaming ? 'bg-accent' : 'bg-green-500';
+    const text = isStreaming ? 'text-accent animate-pulse' : 'text-green-400';
+    return { id: jobId, status, color, text, animate: isStreaming };
+  });
+}
+
+function buildDefaultQueryForPipeline(instances: StoredPipelineInstance[], sources: StoredSource[]): string {
+  if (instances.length === 0) return DEFAULT_HIVE_QUERY;
+  const activeInstanceCount = instances.filter(p => p.destinationCount > 0).length;
+  if (activeInstanceCount === 0) return DEFAULT_HIVE_QUERY;
+  const firstPipeline = instances[0];
+  const activeSources = sources.filter(s => s.active).slice(0, firstPipeline.sourceCount);
+  const sourceComment = activeSources.length > 0
+    ? activeSources.map(s => s.label).join(', ')
+    : 'PostgreSQL 운영 데이터';
+  const isStreaming = firstPipeline.scheduleMode === 'streaming';
+  const whereClause = isStreaming
+    ? `AND (Ground > 5.0 OR VoltR < 200.0 OR VoltS < 200.0)`
+    : `AND dt BETWEEN '2021-04-01' AND '2021-04-30'`;
+  return `-- 파이프라인: "${firstPipeline.name}"
+-- 소스: ${sourceComment}
+-- 모드: ${isStreaming ? '스트리밍 (실시간 전력 품질 감시)' : '배치 (월간 전력 데이터 아카이빙)'}
+SELECT
+  time,
+  VoltR, VoltS, VoltT,           -- 3상 전압 (정상: 220V ± 10%)
+  currR, currS, currT, curr,      -- 3상 전류 + 합산전류
+  Ground,                         -- 누전 전류 (임계값: 5A)
+  PT100, Vibra                    -- 권선 온도, 진동
+FROM sensors.deoksan_equipment
+WHERE equipment_id IN ('EQ-MOTOR-07', 'EQ-PUMP-03', 'EQ-COMP-02')
+  ${whereClause}
+PARTITION BY (dt, equipment_id)
+CLUSTER BY time
+LIMIT 100;`;
+}
 
 const RESULT_COLUMNS: { key: keyof QueryRow; label: string; getColor?: (row: QueryRow) => string }[] = [
   { key: 'time',  label: 'time',  getColor: () => 'text-text-dim' },
@@ -66,8 +159,35 @@ const RESULT_COLUMNS: { key: keyof QueryRow; label: string; getColor?: (row: Que
 export const ArchivingView = () => {
   const [hiveQuery, setHiveQuery] = useState(DEFAULT_HIVE_QUERY);
   const [nodeBarHeights, setNodeBarHeights] = useState(INITIAL_NODE_BARS);
+  const [mockJobs, setMockJobs] = useState<Array<{ id: string; status: string; color: string; text: string; animate: boolean }>>(FALLBACK_JOBS);
   const queryEditorRef = useRef<HTMLTextAreaElement>(null);
   const lineGutterRef  = useRef<HTMLDivElement>(null);
+
+  // Sync pipeline storage and update jobs + default query
+  useEffect(() => {
+    const syncFromPipeline = () => {
+      const { instances, sources } = readPipelineStorage();
+      const jobs = buildJobsFromPipelines(instances);
+      setMockJobs(jobs);
+      // Update default query to reflect selected pipeline
+      const updatedQuery = buildDefaultQueryForPipeline(instances, sources);
+      setHiveQuery(updatedQuery);
+      // Adjust node bar heights based on pipeline count (more pipelines = more nodes to display)
+      const pipelineCount = instances.length;
+      if (pipelineCount > 0) {
+        setNodeBarHeights(Array.from({ length: Math.min(12, Math.max(4, pipelineCount * 2)) }, () => rand(40, 90)));
+      } else {
+        setNodeBarHeights(INITIAL_NODE_BARS);
+      }
+    };
+    syncFromPipeline();
+    window.addEventListener('pipeline-storage-updated', syncFromPipeline);
+    window.addEventListener('focus', syncFromPipeline);
+    return () => {
+      window.removeEventListener('pipeline-storage-updated', syncFromPipeline);
+      window.removeEventListener('focus', syncFromPipeline);
+    };
+  }, []);
 
   useEffect(() => {
     const id = window.setInterval(() => {
@@ -82,6 +202,52 @@ export const ArchivingView = () => {
   const [result, setResult]       = useState<QueryResult | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [jobHistory, setJobHistory]   = useState<{ id: string; preview: string; elapsed: number }[]>([]);
+  const [isArchiving, setIsArchiving] = useState(false);
+  const [archiveDone, setArchiveDone] = useState(false);
+  const [archiveHistory, setArchiveHistory] = useState<ArchiveRecord[]>(INITIAL_ARCHIVE_HISTORY);
+  const [archiveDestination, setArchiveDestination] = useState('HDFS 아카이브');
+  const [destinations, setDestinations] = useState<StoredDestination[]>([]);
+
+  useEffect(() => {
+    const syncDest = () => {
+      const { destinations: dest } = readPipelineStorage();
+      const active = dest.filter(d => d.active);
+      setDestinations(active);
+      if (active.length > 0 && !active.find(d => d.label === archiveDestination)) {
+        setArchiveDestination(active[0]!.label);
+      }
+    };
+    syncDest();
+    window.addEventListener('pipeline-storage-updated', syncDest);
+    return () => window.removeEventListener('pipeline-storage-updated', syncDest);
+  }, []);
+
+  const handleArchive = () => {
+    if (!result || isArchiving) return;
+    setIsArchiving(true);
+    setArchiveDone(false);
+    const arcJobId = `PWR-ARC-${Math.floor(Math.random() * 90000) + 10000}`;
+    // 잡 목록에 RUNNING 추가
+    setMockJobs(prev => [
+      { id: arcJobId, status: 'RUNNING', color: 'bg-accent', text: 'text-accent', animate: true },
+      ...prev.slice(0, 4),
+    ]);
+    setTimeout(() => {
+      const elapsed = 1200 + Math.round(Math.random() * 3000);
+      const now = new Date();
+      const archivedAt = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      // 잡을 SUCCEEDED로 전환
+      setMockJobs(prev => prev.map(j => j.id === arcJobId ? { ...j, status: 'SUCCEEDED', color: 'bg-green-500', text: 'text-green-400', animate: false } : j));
+      // 아카이브 히스토리 추가
+      setArchiveHistory(prev => [
+        { id: `arc-${Date.now()}`, jobId: arcJobId, destination: archiveDestination, rowCount: result.rowCount, elapsed, archivedAt },
+        ...prev.slice(0, 4),
+      ]);
+      setIsArchiving(false);
+      setArchiveDone(true);
+      setTimeout(() => setArchiveDone(false), 3000);
+    }, 2000);
+  };
 
   const lineNumbers = useMemo(() => {
     const n = hiveQuery.split('\n').length;
@@ -165,21 +331,58 @@ export const ArchivingView = () => {
               aria-label="HiveQL query editor"
             />
           </div>
-          <div className="px-5 py-3.5 bg-surface-card flex justify-between items-center gap-4 border-t border-white/5">
+          <div className="px-5 py-3.5 bg-surface-card flex justify-between items-center gap-4 border-t border-white/5 flex-wrap">
             <p className="text-xs text-text-dim tracking-normal">
               예상 MapReduce 비용: <span className="text-accent font-semibold">1.2 TB 처리</span>
             </p>
-            <button
-              type="button"
-              onClick={handleRunQuery}
-              disabled={isRunning}
-              className={`px-6 py-2.5 rounded-lg font-semibold text-sm transition-all flex items-center gap-2 shrink-0 tracking-normal ${
-                isRunning ? 'bg-accent/40 text-primary/60 cursor-not-allowed' : 'bg-accent text-primary hover:brightness-110'
-              }`}
-            >
-              {isRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />}
-              {isRunning ? '실행 중...' : '쿼리 실행'}
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleRunQuery}
+                disabled={isRunning}
+                className={`px-6 py-2.5 rounded-lg font-semibold text-sm transition-all flex items-center gap-2 tracking-normal ${
+                  isRunning ? 'bg-accent/40 text-primary/60 cursor-not-allowed' : 'bg-accent text-primary hover:brightness-110'
+                }`}
+              >
+                {isRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+                {isRunning ? '실행 중...' : '쿼리 실행'}
+              </button>
+              <div className="flex items-center gap-1">
+                <select
+                  value={archiveDestination}
+                  onChange={e => setArchiveDestination(e.target.value)}
+                  disabled={!result || isArchiving}
+                  className="bg-primary border border-white/10 rounded-l-lg px-2 py-2.5 text-xs text-text-dim focus:outline-none focus:border-accent/40 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {destinations.length > 0
+                    ? destinations.map(d => <option key={d.id} value={d.label}>{d.label}</option>)
+                    : <>
+                        <option value="HDFS 아카이브">HDFS 아카이브</option>
+                        <option value="Object Storage">Object Storage</option>
+                      </>
+                  }
+                </select>
+                <button
+                  type="button"
+                  onClick={handleArchive}
+                  disabled={!result || isArchiving}
+                  className={`w-28 py-2.5 rounded-r-lg font-semibold text-sm transition-all flex items-center justify-center gap-2 tracking-normal shrink-0 ${
+                    !result || isArchiving
+                      ? 'bg-surface-card border border-white/5 text-surface-muted/40 cursor-not-allowed'
+                      : archiveDone
+                        ? 'bg-green-500/20 border border-green-500/30 text-green-400'
+                        : 'bg-surface-card border border-accent/30 text-accent hover:bg-accent/10'
+                  }`}
+                >
+                  {isArchiving
+                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /><span>저장 중...</span></>
+                    : archiveDone
+                      ? <><CheckCircle2 className="w-3.5 h-3.5" /><span>완료</span></>
+                      : <><Archive className="w-3.5 h-3.5" /><span>아카이빙</span></>
+                  }
+                </button>
+              </div>
+            </div>
           </div>
         </Card>
 
@@ -203,25 +406,51 @@ export const ArchivingView = () => {
           </Card>
 
           <Card className="flex-1">
-            <h3 className="text-xs font-semibold text-text-dim uppercase tracking-wide mb-6">MapReduce Job Status</h3>
-            <div className="space-y-5">
-              {MOCK_JOBS.map((job, i) => (
+            <h3 className="text-xs font-semibold text-text-dim uppercase tracking-wide mb-4">MapReduce Job Status</h3>
+            <div className="space-y-3">
+              {mockJobs.map((job, i) => (
                 <div key={i} className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2">
                     <div className={`w-1.5 h-1.5 rounded-full ${job.color} ${job.animate ? 'animate-pulse' : ''}`} />
-                    <span className="text-xs font-bold text-text-bright">{job.id}</span>
+                    <span className="text-[11px] font-bold text-text-bright font-mono">{job.id}</span>
                   </div>
-                  <span className={`text-xs font-semibold ${job.text}`}>{job.status}</span>
+                  <span className={`text-[11px] font-semibold ${job.text}`}>{job.status}</span>
                 </div>
               ))}
             </div>
+
+            <div className="mt-5 pt-4 border-t border-white/5">
+              <h4 className="text-[11px] font-semibold text-text-dim uppercase tracking-wide mb-3 flex items-center gap-1.5">
+                <HardDrive className="w-3 h-3 text-accent" />Archive History
+              </h4>
+              <div className="space-y-1.5">
+                <AnimatePresence initial={false}>
+                  {archiveHistory.map(rec => (
+                    <motion.div
+                      key={rec.id}
+                      initial={{ opacity: 0, y: -6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0 }}
+                      className="flex items-center justify-between gap-2 py-1.5 border-b border-white/5 last:border-0"
+                    >
+                      <div className="min-w-0">
+                        <span className="text-[10px] font-mono text-green-400 font-semibold">{rec.jobId}</span>
+                        <span className="text-[10px] text-surface-muted ml-2">{rec.destination}</span>
+                      </div>
+                      <span className="text-[10px] text-surface-muted shrink-0">{rec.rowCount.toLocaleString()}행</span>
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+              </div>
+            </div>
+
             <button
               type="button"
               onClick={() => setShowHistory(v => !v)}
-              className="w-full mt-8 py-2.5 border border-white/5 rounded-lg text-xs font-medium text-text-dim hover:bg-primary transition-colors tracking-wide flex items-center justify-center gap-2"
+              className="w-full mt-4 py-2 border border-white/5 rounded-lg text-xs font-medium text-text-dim hover:bg-primary transition-colors tracking-wide flex items-center justify-center gap-2"
             >
               {showHistory ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-              {showHistory ? 'Hide Job History' : 'View All Job History'}
+              {showHistory ? 'Hide Query History' : 'Query History'}
             </button>
             <AnimatePresence>
               {showHistory && (
@@ -231,17 +460,14 @@ export const ArchivingView = () => {
                   exit={{ height: 0, opacity: 0 }}
                   className="overflow-hidden"
                 >
-                  <div className="mt-4 space-y-2">
+                  <div className="mt-3 space-y-1.5">
                     {jobHistory.length === 0 ? (
-                      <p className="text-xs text-surface-muted text-center py-2">아직 실행한 쿼리가 없습니다</p>
+                      <p className="text-[11px] text-surface-muted text-center py-2">아직 실행한 쿼리가 없습니다</p>
                     ) : (
                       jobHistory.map(j => (
-                        <div key={j.id} className="bg-primary/50 p-3 rounded-lg border border-white/5">
-                          <div className="flex justify-between mb-1">
-                            <span className="text-[11px] font-mono font-semibold text-accent">{j.id}</span>
-                            <span className="text-[11px] text-surface-muted">{j.elapsed}ms</span>
-                          </div>
-                          <p className="text-[11px] text-text-dim truncate">{j.preview}…</p>
+                        <div key={j.id} className="bg-primary/50 px-3 py-2 rounded-lg border border-white/5 flex justify-between items-center gap-2">
+                          <span className="text-[10px] font-mono font-semibold text-accent truncate">{j.id}</span>
+                          <span className="text-[10px] text-surface-muted shrink-0">{j.elapsed}ms</span>
                         </div>
                       ))
                     )}
@@ -350,13 +576,6 @@ export const ArchivingView = () => {
           <div className="p-6 space-y-6">
             <LabeledProgressBar label="Partitioning Density" valueLabel="4.8x"  value={70} />
             <LabeledProgressBar label="Bucketing Alignment"  valueLabel="98.2%" value={98} />
-            <div className="pt-6 border-t border-white/5">
-              <p className="text-xs text-surface-muted font-semibold uppercase mb-3 tracking-wide">Skewed Data Alerts</p>
-              <div className="flex items-center gap-3 bg-red-500/10 p-3 rounded-lg border border-red-500/20">
-                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
-                <span className="text-[11px] text-red-400 font-medium tracking-normal">Table: sales_raw (Partition: region)</span>
-              </div>
-            </div>
           </div>
         </div>
       </div>

@@ -129,7 +129,7 @@ FILTER_RULES: dict[str, FilterRule] = {
 }
 
 DESTINATIONS: list[Destination] = [
-    Destination(id="hdfs", label="HDFS 콜드 아카이브", type="storage", active=True),
+    Destination(id="hdfs", label="HDFS 아카이브", type="storage", active=True),
     Destination(id="mes", label="MES 실시간 피드", type="mes", active=True),
     Destination(id="historian", label="SCADA Historian", type="historian", active=True),
     Destination(id="adl", label="Azure Data Lake (백업)", type="cloud", active=False),

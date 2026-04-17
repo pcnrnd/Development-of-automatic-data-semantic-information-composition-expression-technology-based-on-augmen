@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
-  Search,
   Zap,
   Menu,
   X,
@@ -15,11 +14,13 @@ import { ArchivingView } from './components/ArchivingView';
 import { GovernanceView } from './components/GovernanceView';
 import { NodeManagementView } from './components/NodeManagementView';
 import { MonitoringView } from './components/MonitoringView';
+import { WorkflowDAGView } from './components/WorkflowDAGView';
 
 export default function App() {
   const [activeView, setActiveView] = useState<ViewType>('archiving');
   const [isSidebarOpen, setSidebarOpen] = useState(window.innerWidth >= 1024);
   const [theme, setTheme] = useState<Theme>(() => getStoredTheme());
+  const [isHelpOpen, setHelpOpen] = useState(false);
 
   useEffect(() => {
     try {
@@ -29,6 +30,15 @@ export default function App() {
     }
   }, [theme]);
 
+  useEffect(() => {
+    if (!isHelpOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setHelpOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isHelpOpen]);
+
   const renderView = () => {
     switch (activeView) {
       case 'orchestration': return <OrchestrationView />;
@@ -36,6 +46,7 @@ export default function App() {
       case 'governance': return <GovernanceView />;
       case 'nodes': return <NodeManagementView />;
       case 'monitoring': return <MonitoringView />;
+      case 'workflow': return <WorkflowDAGView />;
       default: return <ArchivingView />;
     }
   };
@@ -108,6 +119,12 @@ export default function App() {
           {FOOTER_NAV.map((item) => (
             <button
               key={item.id}
+              type="button"
+              onClick={() => {
+                if (item.id === 'help') {
+                  setHelpOpen(true);
+                }
+              }}
               className="w-full flex items-center gap-4 px-4 py-3 rounded-xl text-text-dim hover:bg-white/5 transition-all group"
             >
               <item.icon className="w-5 h-5 text-surface-muted group-hover:text-text-bright transition-colors" />
@@ -148,14 +165,6 @@ export default function App() {
             >
               {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
             </button>
-            <div className="hidden md:flex items-center gap-2 px-3 py-2 bg-white/[0.04] rounded-lg border border-white/5">
-              <Search className="w-4 h-4 text-surface-muted shrink-0" />
-              <input
-                type="text"
-                placeholder="텔레메트리 검색…"
-                className="bg-transparent border-none text-sm text-text-bright focus:ring-0 w-44 lg:w-56 placeholder:text-surface-muted font-normal"
-              />
-            </div>
           </div>
         </header>
 
@@ -176,6 +185,55 @@ export default function App() {
           </div>
         </main>
       </div>
+
+      <AnimatePresence>
+        {isHelpOpen && (
+          <motion.div
+            key="help-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="help-modal-title"
+            className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <button
+              type="button"
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              aria-label="도움말 창 닫기"
+              onClick={() => setHelpOpen(false)}
+            />
+            <motion.div
+              className="relative z-10 w-full max-w-lg rounded-xl border border-white/10 bg-surface-card shadow-xl"
+              initial={{ scale: 0.96, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+            >
+              <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-white/5">
+                <h2 id="help-modal-title" className="text-sm font-semibold text-text-bright tracking-normal">Help</h2>
+                <button
+                  type="button"
+                  className="p-2 rounded-lg text-surface-muted hover:text-text-bright hover:bg-white/5 transition-colors"
+                  aria-label="닫기"
+                  onClick={() => setHelpOpen(false)}
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="px-5 py-4 space-y-3 text-sm text-text-dim">
+                <p>이 콘솔은 Pipeline 설정, 저장소 상태 모니터링, 오케스트레이션 운영을 한 화면에서 관리합니다.</p>
+                <ul className="space-y-2 text-[13px]">
+                  <li>• <span className="text-text-bright">Pipeline</span>: 데이터 소스/목적지 추가 및 파이프라인 생성</li>
+                  <li>• <span className="text-text-bright">Orchestration</span>: 생성된 파이프라인 인스턴스 확인 및 실행 제어</li>
+                  <li>• <span className="text-text-bright">Node Management</span>: 저장소 엔드포인트 상태 모니터링</li>
+                </ul>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

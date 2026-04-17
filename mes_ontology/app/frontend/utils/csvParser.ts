@@ -58,11 +58,12 @@ function parseCsvText(text: string, delimiter: string): string[][] {
 
 /**
  * CSV 파일을 읽어 AutoML용 features(2D), target(1D)과 DataProfile을 반환합니다.
- * 첫 줄은 헤더, 마지막 컬럼은 target, 나머지는 feature 컬럼으로 간주합니다.
+ * 첫 줄은 헤더이며, labelColumnName이 지정되면 해당 컬럼을 target으로 사용합니다.
+ * labelColumnName이 없거나 찾지 못하면 마지막 컬럼을 target으로 사용합니다.
  * 숫자로 변환 불가 행은 건너뛰며, 최대 MAX_ROWS행만 사용합니다.
  * 실패 시 { ok: false, error }로 사유를 반환해 UI에서 안내할 수 있게 합니다.
  */
-export async function parseCsvForAutoml(file: File): Promise<ParseCsvForAutomlResult> {
+export async function parseCsvForAutoml(file: File, labelColumnName?: string): Promise<ParseCsvForAutomlResult> {
   if (file.size > MAX_FILE_BYTES) {
     return { ok: false, error: `파일이 너무 큽니다 (최대 ${Math.round(MAX_FILE_BYTES / 1024 / 1024)}MB).` };
   }
@@ -99,10 +100,12 @@ export async function parseCsvForAutoml(file: File): Promise<ParseCsvForAutomlRe
   }
   if (rawRows.length < 2) return { ok: false, error: '유효한 데이터 행이 2행 미만입니다. 컬럼 수가 헤더와 일치하는지 확인해 주세요.' };
 
-  // 2단계: 숫자 변환 가능한 feature 컬럼만 추출 (날짜·문자열 컬럼 자동 제외)
-  const targetColIdx = headers.length - 1;
+  // 2단계: 타깃 컬럼을 결정한 뒤 숫자 변환 가능한 feature 컬럼만 추출 (날짜·문자열 컬럼 자동 제외)
+  const selectedTargetIdx = labelColumnName ? headers.indexOf(labelColumnName) : -1;
+  const targetColIdx = selectedTargetIdx >= 0 ? selectedTargetIdx : headers.length - 1;
   const featureColIdxs: number[] = [];
-  for (let c = 0; c < targetColIdx; c++) {
+  for (let c = 0; c < headers.length; c++) {
+    if (c === targetColIdx) continue;
     const hasNumeric = rawRows.some((row) => row[c] !== '' && !Number.isNaN(Number(row[c])));
     if (hasNumeric) featureColIdxs.push(c);
   }

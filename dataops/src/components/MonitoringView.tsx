@@ -182,8 +182,8 @@ export const MonitoringView = () => {
             { label: 'Storage I/O', value: '1.2 GB/s', icon: Activity, color: 'text-accent', data: [0.8, 1.0, 1.4, 1.2, 1.1, 1.2] },
             { label: 'Active Sessions', value: '12.4k', icon: PieChart, color: 'text-accent', data: [10, 11, 13, 12, 12, 12.4] },
           ].map((item, i) => (
-            <div key={i} className="bg-surface-card p-6 rounded-xl border border-white/5">
-              <div className="flex justify-between items-start mb-4">
+            <div key={i} className="bg-surface-card p-6 rounded-xl border border-white/5 h-full flex flex-col">
+              <div className="flex justify-between items-start">
                 <div className="w-10 h-10 rounded-lg bg-primary flex items-center justify-center border border-white/5">
                   <item.icon className="w-5 h-5 text-accent" />
                 </div>
@@ -192,14 +192,16 @@ export const MonitoringView = () => {
                   <p className="text-xl font-bold text-text-bright">{item.value}</p>
                 </div>
               </div>
-              <div className="h-12 flex items-end gap-1">
-                {item.data.map((v, j) => (
-                  <div 
-                    key={j} 
-                    className="flex-1 bg-accent/20 rounded-t-sm" 
-                    style={{ height: `${(v / Math.max(...item.data)) * 100}%` }} 
-                  />
-                ))}
+              <div className="my-auto flex min-h-[88px] items-center">
+                <div className="h-12 w-full flex items-end gap-1">
+                  {item.data.map((v, j) => (
+                    <div 
+                      key={j} 
+                      className="flex-1 bg-accent/20 rounded-t-sm" 
+                      style={{ height: `${(v / Math.max(...item.data)) * 100}%` }} 
+                    />
+                  ))}
+                </div>
               </div>
             </div>
           ))}

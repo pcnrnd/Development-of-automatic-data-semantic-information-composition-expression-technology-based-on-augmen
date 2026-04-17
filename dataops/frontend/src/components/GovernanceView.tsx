@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Shield,
@@ -7,15 +7,14 @@ import {
   PlusCircle,
   Trash2,
   Cloud,
-  BarChart3,
-  Terminal,
   CheckCircle2,
-  Timer,
   X,
 } from 'lucide-react';
-import { Card, Badge, ProgressBar, FormInput, FormSelect, Metric } from './ui';
+import { Card, Badge, FormInput, FormSelect } from './ui';
+import type { DagEdge, DagNode, PipelineDag } from '../types/dag';
 
 type ScheduleMode = 'streaming' | 'batch';
+type RuleInputMode = 'threshold' | 'extension';
 
 interface DataSource {
   id: string;
@@ -36,14 +35,25 @@ interface FilterRule {
 interface Destination {
   id: string;
   label: string;
+  type: string;
   icon: typeof Cloud;
   active: boolean;
 }
 
+interface PipelineInstance {
+  id: string;
+  name: string;
+  sourceCount: number;
+  ruleCount: number;
+  destinationCount: number;
+  scheduleMode: ScheduleMode;
+  createdAt: string;
+}
+
 const INITIAL_SOURCES: DataSource[] = [
-  { id: 'mqtt',  label: '공장 구역 MQTT 토픽', sub: 'Broker: 10.0.0.45 | factory/+/sensor/#', tag: 'MQTT', icon: Zap, active: true },
-  { id: 'opcua', label: 'SCADA · 설비 표준 연동', sub: '연결 scada-srv:4840 | 전동기·펌프', tag: '설비연동', icon: Database, active: true },
-  { id: 'sql',   label: 'MES 마스터 데이터', sub: 'PostgreSQL: mes-db-cluster (설비 코드)',     tag: 'SQL',    icon: Database, active: false },
+  { id: 'postgresql',    label: 'PostgreSQL 운영 데이터', sub: 'Cluster: mes-db-cluster | schema: public', tag: 'PostgreSQL',    icon: Database, active: true },
+  { id: 'hdfs',          label: 'HDFS 이력 데이터',       sub: 'Path: /data/lake/mes/events | parquet',     tag: 'HDFS',          icon: Database, active: true },
+  { id: 'objectStorage', label: 'Object Storage 파일',    sub: 'Bucket: s3://mes-archive/raw | json/csv',   tag: 'Object Storage', icon: Cloud,    active: false },
 ];
 
 const INITIAL_RULES: FilterRule[] = [
@@ -53,55 +63,327 @@ const INITIAL_RULES: FilterRule[] = [
 ];
 
 const INITIAL_DESTINATIONS: Destination[] = [
-  { id: 'hdfs',      label: 'HDFS 콜드 아카이브', icon: Database,  active: true  },
-  { id: 'mes',       label: 'MES 실시간 피드',     icon: BarChart3, active: true  },
-  { id: 'historian', label: 'SCADA Historian',     icon: Terminal,  active: true  },
-  { id: 'adl',       label: 'Object storage',      icon: Cloud,     active: false },
+  { id: 'hdfs',       label: 'HDFS 아카이브', type: 'HDFS',           icon: Database, active: true  },
+  { id: 'postgresql', label: 'PostgreSQL 운영 DB', type: 'PostgreSQL',     icon: Database, active: true  },
+  { id: 'adl',        label: 'Object storage',      type: 'Object storage', icon: Cloud,    active: false },
 ];
 
-const buildIngestionBars = (mode: ScheduleMode) =>
-  mode === 'streaming'
-    ? [
-        { id: 's-6', short: '−6h', rel: 62, title: '6시간 전 · 7구간 최고 대비 62% (데모)' },
-        { id: 's-5', short: '−5h', rel: 58, title: '5시간 전 · 7구간 최고 대비 58%' },
-        { id: 's-4', short: '−4h', rel: 95, title: '4시간 전 · 7구간 최고 대비 95%' },
-        { id: 's-3', short: '−3h', rel: 68, title: '3시간 전 · 7구간 최고 대비 68%' },
-        { id: 's-2', short: '−2h', rel: 72, title: '2시간 전 · 7구간 최고 대비 72%' },
-        { id: 's-1', short: '−1h', rel: 88, title: '1시간 전 · 7구간 최고 대비 88%' },
-        { id: 's-0', short: '현재', rel: 100, title: '현재 구간 · 7구간 최고 대비 100%' },
-      ]
-    : [
-        { id: 'b-6', short: '−6h', rel: 38, title: '6시간 전 · 7구간 최고 대비 63% (데모)' },
-        { id: 'b-5', short: '−5h', rel: 44, title: '5시간 전 · 7구간 최고 대비 73%' },
-        { id: 'b-4', short: '−4h', rel: 52, title: '4시간 전 · 7구간 최고 대비 87%' },
-        { id: 'b-3', short: '−3h', rel: 48, title: '3시간 전 · 7구간 최고 대비 80%' },
-        { id: 'b-2', short: '−2h', rel: 55, title: '2시간 전 · 7구간 최고 대비 92%' },
-        { id: 'b-1', short: '−1h', rel: 60, title: '1시간 전 · 7구간 최고 대비 100%' },
-        { id: 'b-0', short: '현재', rel: 58, title: '현재 구간 · 7구간 최고 대비 97%' },
-      ];
-
-const ALERT_INCIDENTS_7D = [1, 0, 2, 0, 0, 1, 0] as const;
-const ACTIVE_INCIDENTS_NOW       = 0;
-const ACTIVE_INCIDENTS_YESTERDAY = 1;
+const INITIAL_PIPELINES: PipelineInstance[] = [
+  {
+    id: 'pipeline-1',
+    name: '덕산 3상 전류·전압 실시간 모니터링',
+    sourceCount: 2,
+    ruleCount: 3,
+    destinationCount: 2,
+    scheduleMode: 'streaming',
+    createdAt: new Date(Date.now() - 3600000).toLocaleString('ko-KR', { hour12: false }),
+  },
+  {
+    id: 'pipeline-2',
+    name: '전력 품질 데이터 월간 아카이빙',
+    sourceCount: 2,
+    ruleCount: 2,
+    destinationCount: 1,
+    scheduleMode: 'batch',
+    createdAt: new Date(Date.now() - 86400000).toLocaleString('ko-KR', { hour12: false }),
+  },
+  {
+    id: 'pipeline-3',
+    name: '누전·전압강하 이상 감지',
+    sourceCount: 1,
+    ruleCount: 2,
+    destinationCount: 2,
+    scheduleMode: 'streaming',
+    createdAt: new Date(Date.now() - 172800000).toLocaleString('ko-KR', { hour12: false }),
+  },
+];
 
 let ruleIdCounter = 100;
+let pipelineIdCounter = 3;
+let sourceIdCounter = 100;
+let destinationIdCounter = 100;
+const PIPELINE_STORAGE_SOURCES_KEY = 'pipeline-storage-sources';
+const PIPELINE_STORAGE_DESTINATIONS_KEY = 'pipeline-storage-destinations';
+const PIPELINE_STORAGE_INSTANCES_KEY = 'pipeline-storage-instances';
+const DAG_STORAGE_KEY = 'pipeline-storage-dag';
+
+/** 짧은 DAG 라벨을 만들기 위해 긴 텍스트를 잘라낸다. */
+function shortenLabel(value: string, max = 28): string {
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
+/** 규칙 내용을 DAG 노드 타입과 표시 문구로 변환한다. */
+function toRuleDagNode(pipelineId: string, rule: FilterRule, index: number, x: number, y: number): DagNode {
+  const joined = rule.parts.join(` ${rule.connector} `).trim();
+  const normalized = joined.toLowerCase();
+  const nodeType = normalized.includes('convert_to') || normalized.includes('file_ext')
+    ? 'transform'
+    : rule.severity === 'Critical'
+      ? 'validate'
+      : 'filter';
+
+  return {
+    id: `${pipelineId}-rule-${index + 1}`,
+    type: nodeType,
+    label: shortenLabel(rule.parts[0] ?? `Rule ${index + 1}`, 24),
+    subLabel: shortenLabel(joined || rule.severity, 36),
+    position: { x, y },
+    config: {
+      severity: rule.severity,
+      connector: rule.connector || 'single',
+      expression: joined,
+    },
+  };
+}
+
+/** 현재 활성 설정을 바탕으로 파이프라인용 기본 DAG를 생성한다. */
+function buildPipelineDag(
+  pipelineId: string,
+  activeSources: DataSource[],
+  rules: FilterRule[],
+  activeDestinations: Destination[],
+): PipelineDag {
+  const nodes: DagNode[] = [];
+  const edges: DagEdge[] = [];
+  const sourceX = 60;
+  const stageStartX = 320;
+  const stageGapX = 220;
+  const sinkGapX = rules.length > 0 ? 220 : 320;
+  const baseY = 220;
+  const laneGapY = 120;
+
+  const sourceStartY = baseY - ((activeSources.length - 1) * laneGapY) / 2;
+  const sourceNodes = activeSources.map((source, index) => ({
+    id: `${pipelineId}-source-${source.id}`,
+    type: 'source' as const,
+    label: shortenLabel(source.label, 22),
+    subLabel: shortenLabel(source.sub, 32),
+    position: { x: sourceX, y: sourceStartY + index * laneGapY },
+    config: {
+      sourceId: source.id,
+      sourceType: source.tag,
+    },
+  }));
+  nodes.push(...sourceNodes);
+
+  const ruleStartY = baseY - ((rules.length - 1) * laneGapY) / 2;
+  const ruleNodes = rules.map((rule, index) => (
+    toRuleDagNode(pipelineId, rule, index, stageStartX + index * stageGapX, ruleStartY + index * laneGapY)
+  ));
+  nodes.push(...ruleNodes);
+
+  const sinkX = rules.length > 0
+    ? stageStartX + Math.max(ruleNodes.length - 1, 0) * stageGapX + sinkGapX
+    : stageStartX + sinkGapX;
+  const sinkStartY = baseY - ((activeDestinations.length - 1) * laneGapY) / 2;
+  const sinkNodes = activeDestinations.map((destination, index) => ({
+    id: `${pipelineId}-sink-${destination.id}`,
+    type: 'sink' as const,
+    label: shortenLabel(destination.label, 22),
+    subLabel: shortenLabel(destination.type, 28),
+    position: { x: sinkX, y: sinkStartY + index * laneGapY },
+    config: {
+      destinationId: destination.id,
+      destinationType: destination.type,
+    },
+  }));
+  nodes.push(...sinkNodes);
+
+  if (ruleNodes.length > 0) {
+    sourceNodes.forEach((sourceNode, index) => {
+      edges.push({
+        id: `${pipelineId}-edge-source-${index + 1}`,
+        source: sourceNode.id,
+        target: ruleNodes[0]!.id,
+      });
+    });
+
+    ruleNodes.forEach((ruleNode, index) => {
+      const nextNode = ruleNodes[index + 1];
+      if (!nextNode) return;
+      edges.push({
+        id: `${pipelineId}-edge-rule-${index + 1}`,
+        source: ruleNode.id,
+        target: nextNode.id,
+      });
+    });
+
+    sinkNodes.forEach((sinkNode, index) => {
+      edges.push({
+        id: `${pipelineId}-edge-sink-${index + 1}`,
+        source: ruleNodes[ruleNodes.length - 1]!.id,
+        target: sinkNode.id,
+      });
+    });
+  } else {
+    sourceNodes.forEach((sourceNode, sourceIndex) => {
+      sinkNodes.forEach((sinkNode, sinkIndex) => {
+        edges.push({
+          id: `${pipelineId}-edge-direct-${sourceIndex + 1}-${sinkIndex + 1}`,
+          source: sourceNode.id,
+          target: sinkNode.id,
+        });
+      });
+    });
+  }
+
+  return {
+    pipelineId,
+    nodes,
+    edges,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function readStoredDags(): Record<string, PipelineDag> {
+  try {
+    const raw = localStorage.getItem(DAG_STORAGE_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) as Record<string, PipelineDag>;
+  } catch {
+    return {};
+  }
+}
 
 export const GovernanceView = () => {
   const [sources, setSources]           = useState<DataSource[]>(INITIAL_SOURCES);
-  const [scheduleMode, setScheduleMode] = useState<ScheduleMode>('streaming');
+  const [draftScheduleMode, setDraftScheduleMode] = useState<ScheduleMode>('streaming');
   const [rules, setRules]               = useState<FilterRule[]>(INITIAL_RULES);
   const [destinations, setDestinations] = useState<Destination[]>(INITIAL_DESTINATIONS);
   const [showNewRule, setShowNewRule]   = useState(false);
+  const [showNewSource, setShowNewSource] = useState(false);
+  const [showNewDestination, setShowNewDestination] = useState(false);
+  const [newSourceLabel, setNewSourceLabel] = useState('');
+  const [newSourceTag, setNewSourceTag] = useState('PostgreSQL');
+  const [newSourceSub, setNewSourceSub] = useState('');
+  const [newDestinationLabel, setNewDestinationLabel] = useState('');
+  const [newDestinationType, setNewDestinationType] = useState('HDFS');
   const [newField, setNewField]         = useState('');
   const [newOp, setNewOp]               = useState('>');
   const [newVal, setNewVal]             = useState('');
   const [newSev, setNewSev]             = useState<'Critical' | 'Warning'>('Warning');
+  const [newRuleMode, setNewRuleMode]   = useState<RuleInputMode>('threshold');
+  const [newFromExt, setNewFromExt]     = useState('.csv');
+  const [newToExt, setNewToExt]         = useState('.parquet');
+  const [pipelines, setPipelines]       = useState<PipelineInstance[]>(INITIAL_PIPELINES);
+  const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(null);
+  const [editingPipelineId, setEditingPipelineId] = useState<string | null>(null);
+  const [editingPipelineName, setEditingPipelineName] = useState('');
+
+  useEffect(() => {
+    try {
+      const plainSources = sources.map(({ id, label, sub, tag, active }) => ({ id, label, sub, tag, active }));
+      const plainDestinations = destinations.map(({ id, label, type, active }) => ({ id, label, type, active }));
+      localStorage.setItem(PIPELINE_STORAGE_SOURCES_KEY, JSON.stringify(plainSources));
+      localStorage.setItem(PIPELINE_STORAGE_DESTINATIONS_KEY, JSON.stringify(plainDestinations));
+      window.dispatchEvent(new CustomEvent('pipeline-storage-updated'));
+    } catch {
+      /* ignore */
+    }
+  }, [sources, destinations]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PIPELINE_STORAGE_INSTANCES_KEY, JSON.stringify(pipelines));
+      window.dispatchEvent(new CustomEvent('pipeline-storage-updated'));
+    } catch {
+      /* ignore */
+    }
+  }, [pipelines]);
 
   const toggleSource      = (id: string) => setSources(prev => prev.map(s => s.id === id ? { ...s, active: !s.active } : s));
+  const deleteSource      = (id: string) => setSources(prev => prev.filter(s => s.id !== id));
   const toggleDestination = (id: string) => setDestinations(prev => prev.map(d => d.id === id ? { ...d, active: !d.active } : d));
+  const deleteDestination = (id: string) => setDestinations(prev => prev.filter(d => d.id !== id));
   const deleteRule        = (id: string) => setRules(prev => prev.filter(r => r.id !== id));
+  /** 현재 선택한 소스/규칙/목적지를 기반으로 파이프라인 생성 요청을 처리한다. */
+  const handleAddPipeline = () => {
+    const activeSources = sources.filter(source => source.active);
+    const activeDestinations = destinations.filter(destination => destination.active);
+    const sourceCount = activeSources.length;
+    const destinationCount = activeDestinations.length;
+    const ruleCount = rules.length;
+    pipelineIdCounter += 1;
+
+    const nextPipeline: PipelineInstance = {
+      id: `pipeline-${pipelineIdCounter}`,
+      name: `Pipeline ${String(pipelineIdCounter).padStart(2, '0')}`,
+      sourceCount,
+      ruleCount,
+      destinationCount,
+      scheduleMode: draftScheduleMode,
+      createdAt: new Date().toLocaleString('ko-KR', { hour12: false }),
+    };
+
+    setPipelines(prev => [nextPipeline, ...prev]);
+    setSelectedPipelineId(nextPipeline.id);
+
+    try {
+      const storedDags = readStoredDags();
+      if (!storedDags[nextPipeline.id]) {
+        localStorage.setItem(
+          DAG_STORAGE_KEY,
+          JSON.stringify({
+            ...storedDags,
+            [nextPipeline.id]: buildPipelineDag(nextPipeline.id, activeSources, rules, activeDestinations),
+          }),
+        );
+        window.dispatchEvent(new CustomEvent('pipeline-storage-updated'));
+      }
+    } catch {
+      /* ignore */
+    }
+  };
+
+  /** 특정 파이프라인의 수집 스케줄 모드를 갱신한다. */
+  const setScheduleModeForPipeline = (pipelineId: string, mode: ScheduleMode) => {
+    setPipelines(prev => prev.map(pipeline => (
+      pipeline.id === pipelineId ? { ...pipeline, scheduleMode: mode } : pipeline
+    )));
+  };
+
+  /** 파이프라인 이름 편집 모드를 시작한다. */
+  const startPipelineRename = (pipelineId: string, currentName: string) => {
+    setEditingPipelineId(pipelineId);
+    setEditingPipelineName(currentName);
+  };
+
+  /** 파이프라인 이름 편집을 취소한다. */
+  const cancelPipelineRename = () => {
+    setEditingPipelineId(null);
+    setEditingPipelineName('');
+  };
+
+  /** 파이프라인 이름 변경을 저장한다. */
+  const savePipelineRename = () => {
+    if (!editingPipelineId) return;
+    const nextName = editingPipelineName.trim();
+    if (!nextName) return;
+
+    setPipelines(prev => prev.map(pipeline => (
+      pipeline.id === editingPipelineId ? { ...pipeline, name: nextName } : pipeline
+    )));
+    cancelPipelineRename();
+  };
 
   const addRule = () => {
+    if (newRuleMode === 'extension') {
+      const fromExt = newFromExt.trim();
+      const toExt = newToExt.trim();
+      if (!fromExt || !toExt) return;
+
+      setRules(prev => [...prev, {
+        id: `r${++ruleIdCounter}`,
+        parts: [`file_ext == ${fromExt}`, `convert_to == ${toExt}`],
+        connector: 'Then',
+        severity: newSev,
+      }]);
+      setNewFromExt('.csv');
+      setNewToExt('.parquet');
+      setShowNewRule(false);
+      return;
+    }
+
     if (!newField.trim() || !newVal.trim()) return;
     setRules(prev => [...prev, {
       id: `r${++ruleIdCounter}`,
@@ -109,16 +391,71 @@ export const GovernanceView = () => {
       connector: '',
       severity: newSev,
     }]);
-    setNewField(''); setNewVal(''); setShowNewRule(false);
+    setNewField('');
+    setNewVal('');
+    setShowNewRule(false);
   };
 
-  const govHealth = 80 + sources.filter(s => s.active).length * 6 + (scheduleMode === 'streaming' ? 4 : 0);
+  /** 새로운 데이터 소스를 목록에 추가한다. */
+  const addSource = () => {
+    const label = newSourceLabel.trim();
+    const sub = newSourceSub.trim();
+    const tag = newSourceTag.trim();
+    if (!label || !tag) return;
 
-  const ingestionBars      = useMemo(() => buildIngestionBars(scheduleMode), [scheduleMode]);
-  const ingestionPeakRel   = Math.max(...ingestionBars.map(b => b.rel), 1);
-  const alertIncidentsPeak = Math.max(...ALERT_INCIDENTS_7D, 1);
+    sourceIdCounter += 1;
+    const normalizedTag = tag.toLowerCase();
+    const icon = normalizedTag.includes('object') || normalizedTag.includes('s3') ? Cloud : Database;
+    const defaultSub = normalizedTag.includes('hdfs')
+      ? 'Path: /data/lake/default | parquet'
+      : normalizedTag.includes('object') || normalizedTag.includes('s3')
+        ? 'Bucket: s3://default-bucket/raw | json/csv'
+        : 'Cluster: default-cluster | schema: public';
 
-  const incidentDiff = ACTIVE_INCIDENTS_NOW - ACTIVE_INCIDENTS_YESTERDAY;
+    setSources(prev => [{
+      id: `src-${sourceIdCounter}`,
+      label,
+      sub: sub || defaultSub,
+      tag,
+      icon,
+      active: true,
+    }, ...prev]);
+
+    setNewSourceLabel('');
+    setNewSourceSub('');
+    setNewSourceTag('PostgreSQL');
+    setShowNewSource(false);
+  };
+
+  /** 새로운 데이터 목적지를 목록에 추가한다. */
+  const addDestination = () => {
+    const label = newDestinationLabel.trim();
+    const type = newDestinationType.trim();
+    if (!label || !type) return;
+
+    destinationIdCounter += 1;
+    const normalizedType = type.toLowerCase();
+    const icon = normalizedType.includes('object') || normalizedType.includes('s3') ? Cloud : Database;
+
+    setDestinations(prev => [{
+      id: `dst-${destinationIdCounter}`,
+      label,
+      type,
+      icon,
+      active: true,
+    }, ...prev]);
+
+    setNewDestinationLabel('');
+    setNewDestinationType('HDFS');
+    setShowNewDestination(false);
+  };
+
+  const selectedPipeline = useMemo(
+    () => pipelines.find(pipeline => pipeline.id === selectedPipelineId) ?? null,
+    [pipelines, selectedPipelineId]
+  );
+  const activeScheduleMode = selectedPipeline?.scheduleMode ?? draftScheduleMode;
+  const govHealth = 80 + sources.filter(s => s.active).length * 6 + (activeScheduleMode === 'streaming' ? 4 : 0);
 
   return (
     <div className="space-y-8">
@@ -157,14 +494,90 @@ export const GovernanceView = () => {
                 >
                   <div className="flex justify-between items-start mb-6">
                     <source.icon className={`w-8 h-8 transition-colors ${source.active ? 'text-accent' : 'text-surface-muted group-hover:text-text-dim'}`} />
-                    <span className={`px-2 py-0.5 rounded-md text-[11px] font-semibold tracking-wide transition-colors ${
-                      source.active ? 'bg-accent text-primary' : 'bg-primary text-surface-muted'
-                    }`}>{source.tag}</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`px-2 py-0.5 rounded-md text-[11px] font-semibold tracking-wide transition-colors ${
+                        source.active ? 'bg-accent text-primary' : 'bg-primary text-surface-muted'
+                      }`}>{source.tag}</span>
+                      {source.id.startsWith('src-') && (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={event => {
+                            event.stopPropagation();
+                            deleteSource(source.id);
+                          }}
+                          onKeyDown={event => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              deleteSource(source.id);
+                            }
+                          }}
+                          className="p-1.5 rounded-md border border-white/10 bg-primary/60 text-surface-muted hover:text-red-300 hover:border-red-400/40 transition-colors"
+                          title="추가한 소스 삭제"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <h4 className="text-text-bright font-bold text-xs mb-1">{source.label}</h4>
                   <p className="text-surface-muted text-xs font-medium">{source.sub}</p>
                 </button>
               ))}
+
+              <AnimatePresence>
+                {showNewSource && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="overflow-hidden sm:col-span-3 lg:col-span-1"
+                  >
+                    <div className="p-4 bg-primary/50 rounded-xl border border-accent/30 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-accent uppercase tracking-wide">데이터 소스 추가</span>
+                        <button type="button" onClick={() => setShowNewSource(false)}>
+                          <X className="w-4 h-4 text-surface-muted hover:text-text-bright" />
+                        </button>
+                      </div>
+                      <FormInput
+                        placeholder="소스 이름 (예: PostgreSQL 운영 데이터)"
+                        value={newSourceLabel}
+                        onChange={event => setNewSourceLabel(event.target.value)}
+                      />
+                      <FormSelect value={newSourceTag} onChange={event => setNewSourceTag(event.target.value)}>
+                        <option>PostgreSQL</option>
+                        <option>HDFS</option>
+                        <option>Object Storage</option>
+                      </FormSelect>
+                      <FormInput
+                        placeholder="연결 정보 (예: Cluster: mes-db-cluster | schema: public)"
+                        value={newSourceSub}
+                        onChange={event => setNewSourceSub(event.target.value)}
+                      />
+                      <button
+                        type="button"
+                        onClick={addSource}
+                        className="w-full py-2 bg-accent text-primary text-xs font-semibold rounded-lg hover:brightness-110 transition-all"
+                      >
+                        소스 추가
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {!showNewSource && (
+                <button
+                  type="button"
+                  onClick={() => setShowNewSource(true)}
+                  className="sm:col-span-3 lg:col-span-1 w-full py-3 border border-dashed border-white/10 rounded-xl text-surface-muted text-xs font-medium tracking-normal hover:border-accent/40 hover:text-text-bright transition-colors flex justify-center items-center gap-2"
+                >
+                  <PlusCircle className="w-4 h-4" />
+                  데이터 소스 추가
+                </button>
+              )}
             </div>
           </Card>
 
@@ -227,6 +640,31 @@ export const GovernanceView = () => {
                           <X className="w-4 h-4 text-surface-muted hover:text-text-bright" />
                         </button>
                       </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setNewRuleMode('threshold')}
+                          className={`py-1.5 text-[11px] font-semibold rounded-md border transition-colors ${
+                            newRuleMode === 'threshold'
+                              ? 'border-accent/40 bg-accent/10 text-accent'
+                              : 'border-white/10 bg-primary/60 text-surface-muted hover:text-text-bright'
+                          }`}
+                        >
+                          임계값 규칙
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewRuleMode('extension')}
+                          className={`py-1.5 text-[11px] font-semibold rounded-md border transition-colors ${
+                            newRuleMode === 'extension'
+                              ? 'border-accent/40 bg-accent/10 text-accent'
+                              : 'border-white/10 bg-primary/60 text-surface-muted hover:text-text-bright'
+                          }`}
+                        >
+                          확장자 변환 규칙
+                        </button>
+                      </div>
+                      {newRuleMode === 'threshold' ? (
                       <div className="flex gap-3 flex-wrap">
                         <FormInput
                           placeholder="필드 (예: Temperature)"
@@ -251,6 +689,22 @@ export const GovernanceView = () => {
                           <option>Warning</option>
                         </FormSelect>
                       </div>
+                      ) : (
+                        <div className="flex gap-3 flex-wrap">
+                          <FormInput
+                            placeholder="원본 확장자 (예: .csv)"
+                            value={newFromExt}
+                            onChange={e => setNewFromExt(e.target.value)}
+                            className="flex-1 min-w-28"
+                          />
+                          <FormInput
+                            placeholder="대상 확장자 (예: .parquet)"
+                            value={newToExt}
+                            onChange={e => setNewToExt(e.target.value)}
+                            className="flex-1 min-w-28"
+                          />
+                        </div>
+                      )}
                       <button
                         type="button"
                         onClick={addRule}
@@ -297,152 +751,215 @@ export const GovernanceView = () => {
                     </div>
                     <span className="text-xs font-bold text-text-bright">{dest.label}</span>
                   </div>
-                  <div className={`w-2 h-2 rounded-full transition-colors ${dest.active ? 'bg-accent' : 'bg-surface-muted'}`} />
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full transition-colors ${dest.active ? 'bg-accent' : 'bg-surface-muted'}`} />
+                    {dest.id.startsWith('dst-') && (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={event => {
+                          event.stopPropagation();
+                          deleteDestination(dest.id);
+                        }}
+                        onKeyDown={event => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            deleteDestination(dest.id);
+                          }
+                        }}
+                        className="p-1.5 rounded-md border border-white/10 bg-primary/60 text-surface-muted hover:text-red-300 hover:border-red-400/40 transition-colors"
+                        title="추가한 목적지 삭제"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </span>
+                    )}
+                  </div>
                 </button>
               ))}
+
+              <AnimatePresence>
+                {showNewDestination && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="p-4 bg-primary/50 rounded-xl border border-accent/30 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-accent uppercase tracking-wide">데이터 목적지 추가</span>
+                        <button type="button" onClick={() => setShowNewDestination(false)}>
+                          <X className="w-4 h-4 text-surface-muted hover:text-text-bright" />
+                        </button>
+                      </div>
+                      <FormInput
+                        placeholder="목적지 이름 (예: HDFS 아카이브)"
+                        value={newDestinationLabel}
+                        onChange={event => setNewDestinationLabel(event.target.value)}
+                      />
+                      <FormSelect value={newDestinationType} onChange={event => setNewDestinationType(event.target.value)}>
+                        <option>HDFS</option>
+                        <option>PostgreSQL</option>
+                        <option>Object storage</option>
+                      </FormSelect>
+                      <button
+                        type="button"
+                        onClick={addDestination}
+                        className="w-full py-2 bg-accent text-primary text-xs font-semibold rounded-lg hover:brightness-110 transition-all"
+                      >
+                        목적지 추가
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {!showNewDestination && (
+                <button
+                  type="button"
+                  onClick={() => setShowNewDestination(true)}
+                  className="w-full py-3 border border-dashed border-white/10 rounded-xl text-surface-muted text-xs font-medium tracking-normal hover:border-accent/40 hover:text-text-bright transition-colors flex justify-center items-center gap-2"
+                >
+                  <PlusCircle className="w-4 h-4" />
+                  데이터 목적지 추가
+                </button>
+              )}
             </div>
           </Card>
         </div>
 
-        {/* 수집 스케줄링: 소스·필터·목적지 아래 전체 폭 */}
-        <Card dim className="!p-6 md:!p-8">
-          <div className="space-y-6">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <h4 className="text-text-bright font-bold text-xs flex items-center gap-2">
-                <Timer className="w-4 h-4 text-accent" />
-                수집 스케줄링 (Collection Scheduling)
-              </h4>
-              <span className="text-xs font-medium text-surface-muted">Timezone: UTC+09:00</span>
-            </div>
-            <div className="bg-primary/50 p-6 rounded-xl border border-white/5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-              <div className="space-y-1">
-                <div className="text-xs text-text-bright font-bold">
-                  {scheduleMode === 'streaming' ? '실시간 스트리밍 모드' : '배치 처리 모드'}
-                </div>
-                <div className="text-xs text-surface-muted font-medium tracking-normal">
-                  {scheduleMode === 'streaming'
-                    ? '지연 시간: < 50ms, 최대 처리량: 10k msg/sec'
-                    : '스케줄: 매 1시간, 최대 처리량: 500k records/batch'}
-                </div>
-              </div>
-              <div className="flex gap-2 shrink-0">
-                {([
-                  { mode: 'batch',     label: '배치 처리' },
-                  { mode: 'streaming', label: '스트리밍' },
-                ] as const).map(({ mode, label }) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => setScheduleMode(mode)}
-                    className={`px-5 py-2.5 text-sm font-medium rounded-lg border border-white/5 tracking-normal transition-all ${
-                      scheduleMode === mode ? 'bg-accent text-primary font-semibold' : 'bg-surface-card text-text-dim hover:bg-white/5'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        </Card>
-      </div>
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={handleAddPipeline}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-accent/35 bg-accent/10 hover:bg-accent/15 text-xs font-semibold text-text-bright transition-colors"
+          >
+            <PlusCircle className="w-3.5 h-3.5 text-accent" aria-hidden />
+            현재 설정으로 파이프라인 추가
+          </button>
+        </div>
 
-      {/* Bottom Metrics */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Ingestion Throughput */}
-        <Card dim className="!p-6 md:!p-8 border-t-2 border-accent">
-          <div className="text-xs text-surface-muted font-medium uppercase tracking-wide mb-3">Ingestion Throughput</div>
-          <p className="text-[11px] text-surface-muted font-medium leading-snug tracking-normal mb-3">
-            시간당 유입 추정치(GB/hr). 아래 막대는 최근 7시간(1시간 단위)별 부하를,{' '}
-            <span className="text-text-dim">7개 구간 중 가장 높은 값을 100%</span>로 두고 나머지를 비율로 표시합니다(데모).
-          </p>
-          <Metric label="" value={scheduleMode === 'streaming' ? '4.2' : '1.8'} unit="GB/hr" size="lg" />
-          <div className="mt-5" role="img" aria-label="최근 7시간 시간당 유입량 상대 추이 데모">
-            <div className="flex justify-between text-[10px] text-surface-muted uppercase tracking-wide mb-1">
-              <span>낮음</span>
-              <span className="normal-case tracking-normal text-surface-muted/80">최근 7시간</span>
-              <span>높음</span>
+        <Card dim className="!p-6 md:!p-8">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
+            <h4 className="text-text-bright font-bold text-xs flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-accent" />
+              생성된 파이프라인
+            </h4>
+            <span className="text-xs font-medium text-surface-muted">{pipelines.length}개</span>
+          </div>
+          {pipelines.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-white/10 bg-primary/40 px-4 py-6 text-center text-xs text-surface-muted">
+              현재 설정으로 파이프라인을 추가하면 여기에 표시됩니다.
             </div>
-            <div className="flex items-end gap-1.5 h-20 border-b border-white/10 pb-px">
-              {ingestionBars.map((b, i) => {
-                const hNorm = (b.rel / ingestionPeakRel) * 100;
-                const isLast = i === ingestionBars.length - 1;
-                return (
-                  <div key={b.id} className="flex-1 flex flex-col items-center justify-end gap-1.5 min-w-0 h-full group">
-                    <div
-                      className={`w-full max-w-[2.25rem] mx-auto rounded-t-sm transition-colors ${
-                        isLast ? 'bg-accent/75 ring-1 ring-accent/25' : 'bg-white/10 group-hover:bg-white/15'
-                      }`}
-                      style={{ height: `${Math.max(8, hNorm)}%` }}
-                      title={b.title}
-                    />
-                    <span className="text-[9px] font-medium text-surface-muted tabular-nums leading-none text-center truncate w-full">{b.short}</span>
+          ) : (
+            <div className="space-y-3">
+              {pipelines.map(pipeline => (
+                <div
+                  key={pipeline.id}
+                  onClick={() => setSelectedPipelineId(pipeline.id)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      setSelectedPipelineId(pipeline.id);
+                    }
+                  }}
+                  className={`w-full rounded-xl border px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-left transition-colors ${
+                    selectedPipelineId === pipeline.id
+                      ? 'border-accent/45 bg-accent/10'
+                      : 'border-white/10 bg-primary/50 hover:border-accent/25'
+                  }`}
+                >
+                  <div>
+                    {editingPipelineId === pipeline.id ? (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <FormInput
+                          value={editingPipelineName}
+                          onChange={event => setEditingPipelineName(event.target.value)}
+                          className="min-w-44 h-8 text-xs"
+                          placeholder="파이프라인 이름"
+                        />
+                        <button
+                          type="button"
+                          onClick={event => {
+                            event.stopPropagation();
+                            savePipelineRename();
+                          }}
+                          className="px-2.5 py-1 rounded-md text-[11px] font-semibold border border-accent/40 bg-accent/10 text-text-bright hover:bg-accent/15 transition-colors"
+                        >
+                          저장
+                        </button>
+                        <button
+                          type="button"
+                          onClick={event => {
+                            event.stopPropagation();
+                            cancelPipelineRename();
+                          }}
+                          className="px-2.5 py-1 rounded-md text-[11px] font-semibold border border-white/10 bg-primary/60 text-surface-muted hover:text-text-bright hover:border-accent/30 transition-colors"
+                        >
+                          취소
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-xs font-semibold text-text-bright">{pipeline.name}</p>
+                        <button
+                          type="button"
+                          onClick={event => {
+                            event.stopPropagation();
+                            startPipelineRename(pipeline.id, pipeline.name);
+                          }}
+                          className="px-2 py-0.5 rounded-md text-[11px] font-semibold border border-white/10 bg-primary/60 text-surface-muted hover:text-text-bright hover:border-accent/30 transition-colors"
+                        >
+                          이름 변경
+                        </button>
+                      </div>
+                    )}
+                    <p className="text-[11px] text-surface-muted mt-1">생성 시각: {pipeline.createdAt}</p>
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        </Card>
-
-        {/* Data Quality Score */}
-        <Card dim className="!p-6 md:!p-8">
-          <div className="text-xs text-surface-muted font-medium uppercase tracking-wide mb-3">Data Quality Score</div>
-          <Metric label="" value="99.2" unit="%" size="lg" />
-          <ProgressBar value={99.2} className="mt-6" />
-          <div className="mt-3 text-xs font-medium text-accent tracking-normal">Missing Values: 0.08%</div>
-        </Card>
-
-        {/* Active Alerts */}
-        <Card dim className="!p-6 md:!p-8">
-          <div className="text-xs text-surface-muted font-medium uppercase tracking-wide mb-3">Active Alerts</div>
-          <p className="text-[11px] text-surface-muted font-medium leading-snug tracking-normal mb-3">
-            미해결 사고 건수. 아래 막대는 지난 7일 <span className="text-text-dim">일별 신규 발생</span> 건수(데모).
-          </p>
-          <Metric label="" value={ACTIVE_INCIDENTS_NOW} unit="Incidents" size="lg" />
-          <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[11px] font-medium tracking-normal">
-            <span className="text-surface-muted">
-              전일 동시간 대비{' '}
-              <span
-                className={`tabular-nums ${incidentDiff < 0 ? 'text-accent' : incidentDiff > 0 ? 'text-amber-400/90' : 'text-text-dim'}`}
-                title="전일 이 시각 기준 활성 사고 수와의 차이(데모)"
-              >
-                {incidentDiff > 0 ? '+' : ''}{incidentDiff}건
-              </span>
-            </span>
-            <span className="text-surface-muted">
-              7일 누계 <span className="text-text-bright tabular-nums">{ALERT_INCIDENTS_7D.reduce((a, b) => a + b, 0)}건</span>
-              <span className="text-surface-muted/80 font-normal"> · 전주 동기간 대비 </span>
-              <span className="text-accent tabular-nums" title="전주 같은 7일 창 대비(데모)">−2건</span>
-            </span>
-          </div>
-          <div className="mt-4" role="img" aria-label="지난 7일 일별 신규 사고 건수 데모 막대 그래프">
-            <div className="flex items-end gap-1 h-12 border-b border-white/10 pb-px">
-              {ALERT_INCIDENTS_7D.map((v, i) => {
-                const isToday = i === ALERT_INCIDENTS_7D.length - 1;
-                const h = Math.max(12, (v / alertIncidentsPeak) * 100);
-                return (
-                  <div key={i} className="flex-1 flex flex-col items-center justify-end gap-1 min-w-0 h-full">
-                    <div
-                      className={`w-full max-w-[1.75rem] mx-auto rounded-t-sm ${
-                        isToday ? 'bg-accent/70 ring-1 ring-accent/20' : 'bg-white/10'
-                      }`}
-                      style={{ height: `${h}%` }}
-                      title={`${ALERT_INCIDENTS_7D.length - 1 - i}일 전: ${v}건`}
-                    />
+                  <div className="flex flex-col items-start sm:items-end gap-2">
+                    <p className="text-[11px] font-medium text-text-dim">
+                      소스 {pipeline.sourceCount} · 규칙 {pipeline.ruleCount} · 목적지 {pipeline.destinationCount}
+                    </p>
+                    <div className="inline-flex gap-1.5">
+                      {([
+                        { mode: 'batch', label: '배치' },
+                        { mode: 'streaming', label: '스트리밍' },
+                      ] as const).map(({ mode, label }) => (
+                        <span
+                          key={`${pipeline.id}-${mode}`}
+                          role="button"
+                          tabIndex={0}
+                          onClick={event => {
+                            event.stopPropagation();
+                            setScheduleModeForPipeline(pipeline.id, mode);
+                          }}
+                          onKeyDown={event => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setScheduleModeForPipeline(pipeline.id, mode);
+                            }
+                          }}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-semibold tracking-normal border transition-colors ${
+                            pipeline.scheduleMode === mode
+                              ? 'bg-accent text-primary border-accent'
+                              : 'bg-primary/60 text-surface-muted border-white/10 hover:text-text-bright hover:border-accent/30'
+                          }`}
+                        >
+                          {label}
+                        </span>
+                      ))}
+                    </div>
                   </div>
-                );
-              })}
+                </div>
+              ))}
             </div>
-            <div className="flex justify-between text-[9px] text-surface-muted mt-1 tabular-nums">
-              <span>−6d</span>
-              <span className="text-surface-muted/80">오늘</span>
-            </div>
-          </div>
-          <div className="mt-5 flex items-center gap-2 text-xs font-medium text-accent tracking-normal">
-            <CheckCircle2 className="w-4 h-4 shrink-0" />
-            모든 시스템 정상 작동 중
-          </div>
+          )}
         </Card>
+
       </div>
 
     </div>

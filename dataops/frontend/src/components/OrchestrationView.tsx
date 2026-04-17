@@ -8,7 +8,15 @@ import {
   Zap,
   Database,
   CircleHelp,
+  GitFork,
+  Pencil,
+  Eye,
 } from 'lucide-react';
+import { DagCanvas } from './dag/DagCanvas';
+import { DagNodeConfigPanel } from './dag/DagNodeConfigPanel';
+import { DagNodePalette } from './dag/DagNodePalette';
+import { DAG_MOCK_DATA } from './dag/dagMockData';
+import type { PipelineDag, DagNode as DagNodeType, DagNodeType as NodeType } from '../types/dag';
 
 type PipelineStatus = 'running' | 'paused' | 'idle';
 
@@ -17,6 +25,35 @@ interface LogEntry {
   time: string;
   type: 'INFO' | 'WARN' | 'ERROR';
   msg: string;
+}
+
+interface StoredPipelineInstance {
+  id: string;
+  name: string;
+  sourceCount: number;
+  ruleCount: number;
+  destinationCount: number;
+  scheduleMode: 'streaming' | 'batch';
+  createdAt: string;
+}
+type WorkflowProfile = 'fast' | 'balanced' | 'safe';
+type StageStat = { executors: number; subtasks: number; bp: '없음' | '낮음' | '중간' };
+interface StoredSource {
+  id: string;
+  label: string;
+  sub: string;
+  tag: string;
+  active: boolean;
+}
+interface StoredDestination {
+  id: string;
+  label: string;
+  type: string;
+  active: boolean;
+}
+interface PipelineWorkflowConfig {
+  sourceIds: string[];
+  destinationIds: string[];
 }
 
 let logIdCounter = 0;
@@ -68,6 +105,59 @@ const WORKER_ROWS = [
   { name: 'Worker-KR-Ulsan', role: 'Active', execRange: 'EX-04—06' },
   { name: 'Worker-KR-Incheon', role: 'Active', execRange: 'EX-07—08' },
 ] as const;
+const PIPELINE_STORAGE_INSTANCES_KEY = 'pipeline-storage-instances';
+const PIPELINE_STORAGE_SOURCES_KEY = 'pipeline-storage-sources';
+const PIPELINE_STORAGE_DESTINATIONS_KEY = 'pipeline-storage-destinations';
+const DAG_STORAGE_KEY = 'pipeline-storage-dag';
+
+type DagPanelTab = 'runtime' | 'editor';
+
+function readStoredDags(): Record<string, PipelineDag> {
+  try {
+    const raw = localStorage.getItem(DAG_STORAGE_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) as Record<string, PipelineDag>;
+  } catch {
+    return {};
+  }
+}
+
+function makeDagNodeId(): string {
+  return `node-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+}
+
+function readStoredPipelines(): StoredPipelineInstance[] {
+  try {
+    const raw = localStorage.getItem(PIPELINE_STORAGE_INSTANCES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as StoredPipelineInstance[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function readStoredSources(): StoredSource[] {
+  try {
+    const raw = localStorage.getItem(PIPELINE_STORAGE_SOURCES_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as StoredSource[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function readStoredDestinations(): StoredDestination[] {
+  try {
+    const raw = localStorage.getItem(PIPELINE_STORAGE_DESTINATIONS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as StoredDestination[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 export const OrchestrationView = () => {
   const [status, setStatus] = useState<PipelineStatus>('running');
@@ -82,12 +172,31 @@ export const OrchestrationView = () => {
     [38, 52, 61, 44, 73, 58, 49, 66],
   );
   /** 스테이지별 실행 매핑(데모 수치) */
-  const [stageStats, setStageStats] = useState(() => [
+  const [stageStats, setStageStats] = useState<StageStat[]>(() => [
     { executors: 2, subtasks: 52, bp: '없음' as const },
     { executors: 4, subtasks: 128, bp: '낮음' as const },
     { executors: 3, subtasks: 96, bp: '낮음' as const },
     { executors: 2, subtasks: 40, bp: '없음' as const },
   ]);
+  const [pipelineInstances, setPipelineInstances] = useState<StoredPipelineInstance[]>(() => readStoredPipelines());
+  const [selectedPipelineId, setSelectedPipelineId] = useState<string | null>(null);
+  const [workflowProfileByPipeline, setWorkflowProfileByPipeline] = useState<Record<string, WorkflowProfile>>({});
+  // DAG Editor state
+  const [dagPanelTab, setDagPanelTab] = useState<DagPanelTab>('runtime');
+  const [dagByPipeline, setDagByPipeline] = useState<Record<string, PipelineDag>>(() => {
+    const stored = readStoredDags();
+    const merged: Record<string, PipelineDag> = { ...stored };
+    Object.entries(DAG_MOCK_DATA).forEach(([id, dag]) => {
+      if (!merged[id]) merged[id] = dag;
+    });
+    return merged;
+  });
+  const [dagSelectedNodeId, setDagSelectedNodeId] = useState<string | null>(null);
+  const [dagEditMode, setDagEditMode] = useState(false);
+  const dagFirstLoad = useRef(true);
+  const [sourceCatalog, setSourceCatalog] = useState<StoredSource[]>(() => readStoredSources());
+  const [destinationCatalog, setDestinationCatalog] = useState<StoredDestination[]>(() => readStoredDestinations());
+  const [workflowConfigByPipeline, setWorkflowConfigByPipeline] = useState<Record<string, PipelineWorkflowConfig>>({});
   /** 로그 영역 스크롤 컨테이너 — scrollIntoView 금지(메인 화면이 따라 내려가는 현상 방지) */
   const logScrollRef = useRef<HTMLDivElement>(null);
   /** 사용자가 맨 아래 근처에 있을 때만 신규 로그에 맞춰 자동 스크롤 */
@@ -109,6 +218,291 @@ export const OrchestrationView = () => {
     if (!el || !stickLogsToBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
   }, [logs]);
+
+  useEffect(() => {
+    const syncPipelines = () => {
+      setPipelineInstances(readStoredPipelines());
+      setSourceCatalog(readStoredSources());
+      setDestinationCatalog(readStoredDestinations());
+    };
+    window.addEventListener('pipeline-storage-updated', syncPipelines);
+    window.addEventListener('focus', syncPipelines);
+    return () => {
+      window.removeEventListener('pipeline-storage-updated', syncPipelines);
+      window.removeEventListener('focus', syncPipelines);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (pipelineInstances.length === 0) {
+      setSelectedPipelineId(null);
+      return;
+    }
+    setSelectedPipelineId(prev => {
+      if (prev && pipelineInstances.some(p => p.id === prev)) return prev;
+      return pipelineInstances[0]?.id ?? null;
+    });
+  }, [pipelineInstances]);
+
+  const selectedPipeline = pipelineInstances.find(pipeline => pipeline.id === selectedPipelineId) ?? null;
+  const selectedWorkflowProfile: WorkflowProfile = selectedPipelineId
+    ? (workflowProfileByPipeline[selectedPipelineId] ?? 'balanced')
+    : 'balanced';
+
+  useEffect(() => {
+    if (!selectedPipelineId) return;
+    setWorkflowConfigByPipeline(prev => {
+      if (prev[selectedPipelineId]) return prev;
+      return {
+        ...prev,
+        [selectedPipelineId]: {
+          sourceIds: sourceCatalog.filter(source => source.active).map(source => source.id),
+          destinationIds: destinationCatalog.filter(destination => destination.active).map(destination => destination.id),
+        },
+      };
+    });
+  }, [selectedPipelineId, sourceCatalog, destinationCatalog]);
+
+  const selectedWorkflowConfig = selectedPipelineId
+    ? workflowConfigByPipeline[selectedPipelineId]
+    : undefined;
+
+  // DAG persistence
+  useEffect(() => {
+    if (dagFirstLoad.current) { dagFirstLoad.current = false; return; }
+    try {
+      localStorage.setItem(DAG_STORAGE_KEY, JSON.stringify(dagByPipeline));
+    } catch {/* ignore */}
+  }, [dagByPipeline]);
+
+  // 새 파이프라인 선택 시 DAG 엔트리 없으면 빈 DAG 자동 생성
+  useEffect(() => {
+    if (!selectedPipelineId || dagByPipeline[selectedPipelineId]) return;
+    setDagByPipeline(prev => ({
+      ...prev,
+      [selectedPipelineId]: {
+        pipelineId: selectedPipelineId,
+        nodes: [],
+        edges: [],
+        updatedAt: new Date().toISOString(),
+      },
+    }));
+  }, [selectedPipelineId, dagByPipeline]);
+
+  // DAG handlers
+  const updateDag = useCallback((pipelineId: string, updater: (dag: PipelineDag) => PipelineDag) => {
+    setDagByPipeline(prev => {
+      const dag = prev[pipelineId];
+      if (!dag) return prev;
+      return { ...prev, [pipelineId]: { ...updater(dag), updatedAt: new Date().toISOString() } };
+    });
+  }, []);
+
+  const handleDagMoveNode = useCallback((id: string, x: number, y: number) => {
+    if (!selectedPipelineId) return;
+    updateDag(selectedPipelineId, dag => ({
+      ...dag,
+      nodes: dag.nodes.map(n => n.id === id ? { ...n, position: { x, y } } : n),
+    }));
+  }, [selectedPipelineId, updateDag]);
+
+  const handleDagAddEdge = useCallback((sourceId: string, targetId: string) => {
+    if (!selectedPipelineId) return;
+    updateDag(selectedPipelineId, dag => {
+      if (dag.edges.some(e => e.source === sourceId && e.target === targetId)) return dag;
+      return { ...dag, edges: [...dag.edges, { id: makeDagNodeId(), source: sourceId, target: targetId }] };
+    });
+  }, [selectedPipelineId, updateDag]);
+
+  const handleDagDeleteEdge = useCallback((edgeId: string) => {
+    if (!selectedPipelineId) return;
+    updateDag(selectedPipelineId, dag => ({ ...dag, edges: dag.edges.filter(e => e.id !== edgeId) }));
+  }, [selectedPipelineId, updateDag]);
+
+  const handleDagAddNode = useCallback((type: NodeType, x: number, y: number) => {
+    if (!selectedPipelineId) return;
+    const defaultLabels: Record<NodeType, string> = {
+      source: '수집 소스',
+      filter: '필터 규칙',
+      transform: '변환 단계',
+      validate: '검증 단계',
+      branch: '분기 노드',
+      sink: '적재 대상',
+    };
+    const newNode: DagNodeType = {
+      id: makeDagNodeId(), type,
+      label: defaultLabels[type],
+      subLabel: '', position: { x, y }, config: {},
+    };
+    updateDag(selectedPipelineId, dag => ({ ...dag, nodes: [...dag.nodes, newNode] }));
+    setDagSelectedNodeId(newNode.id);
+  }, [selectedPipelineId, updateDag]);
+
+  /** 특정 노드 오른쪽에 다음 단계를 만들고 자동 연결한다. */
+  const handleQuickAddConnectedNode = useCallback((sourceNodeId: string, type: NodeType) => {
+    if (!selectedPipelineId) return;
+    const currentDag = dagByPipeline[selectedPipelineId];
+    const sourceNode = currentDag?.nodes.find(node => node.id === sourceNodeId);
+    if (!currentDag || !sourceNode) return;
+
+    const defaultLabels: Record<NodeType, string> = {
+      source: '수집 소스',
+      filter: '필터 규칙',
+      transform: '변환 단계',
+      validate: '검증 단계',
+      branch: '분기 노드',
+      sink: '적재 대상',
+    };
+    const sameTypeNodes = currentDag.nodes.filter(node => node.type === type);
+    const baseX = sourceNode.position.x + 240;
+    const baseY = sourceNode.position.y;
+    const occupied = currentDag.nodes.some(
+      node => Math.abs(node.position.x - baseX) < 40 && Math.abs(node.position.y - baseY) < 40,
+    );
+    const nextY = occupied ? Math.max(baseY, ...sameTypeNodes.map(node => node.position.y)) + 110 : baseY;
+    const newNodeId = makeDagNodeId();
+
+    updateDag(selectedPipelineId, dag => ({
+      ...dag,
+      nodes: [
+        ...dag.nodes,
+        { id: newNodeId, type, label: defaultLabels[type], subLabel: '', position: { x: baseX, y: nextY }, config: {} },
+      ],
+      edges: dag.edges.some(edge => edge.source === sourceNodeId && edge.target === newNodeId)
+        ? dag.edges
+        : [...dag.edges, { id: makeDagNodeId(), source: sourceNodeId, target: newNodeId }],
+    }));
+    setDagSelectedNodeId(newNodeId);
+  }, [dagByPipeline, selectedPipelineId, updateDag]);
+
+  /** 팔레트 클릭 추가 시 타입별 컬럼에 맞춰 겹치지 않도록 기본 좌표를 계산한다. */
+  const handlePaletteAddNode = useCallback((type: NodeType) => {
+    if (!selectedPipelineId) return;
+    const currentDag = dagByPipeline[selectedPipelineId];
+    const columnByType: Record<NodeType, number> = {
+      source: 80,
+      filter: 340,
+      transform: 340,
+      validate: 580,
+      branch: 580,
+      sink: 840,
+    };
+    const columnNodes = currentDag?.nodes.filter(node => node.type === type) ?? [];
+    const nextY = columnNodes.length > 0
+      ? Math.max(...columnNodes.map(node => node.position.y)) + 110
+      : 120;
+    handleDagAddNode(type, columnByType[type], nextY);
+  }, [dagByPipeline, handleDagAddNode, selectedPipelineId]);
+
+  const handleDagDeleteNode = useCallback((nodeId: string) => {
+    if (!selectedPipelineId) return;
+    updateDag(selectedPipelineId, dag => ({
+      ...dag,
+      nodes: dag.nodes.filter(n => n.id !== nodeId),
+      edges: dag.edges.filter(e => e.source !== nodeId && e.target !== nodeId),
+    }));
+    setDagSelectedNodeId(null);
+  }, [selectedPipelineId, updateDag]);
+
+  const handleDagUpdateLabel = useCallback((id: string, label: string) => {
+    if (!selectedPipelineId) return;
+    updateDag(selectedPipelineId, dag => ({
+      ...dag, nodes: dag.nodes.map(n => n.id === id ? { ...n, label } : n),
+    }));
+  }, [selectedPipelineId, updateDag]);
+
+  const handleDagUpdateSubLabel = useCallback((id: string, subLabel: string) => {
+    if (!selectedPipelineId) return;
+    updateDag(selectedPipelineId, dag => ({
+      ...dag, nodes: dag.nodes.map(n => n.id === id ? { ...n, subLabel } : n),
+    }));
+  }, [selectedPipelineId, updateDag]);
+
+  const handleDagUpdateConfig = useCallback((id: string, key: string, value: string) => {
+    if (!selectedPipelineId) return;
+    updateDag(selectedPipelineId, dag => ({
+      ...dag,
+      nodes: dag.nodes.map(n =>
+        n.id === id ? { ...n, config: { ...(n.config ?? {}), [key]: value } } : n
+      ),
+    }));
+  }, [selectedPipelineId, updateDag]);
+
+  // Keyboard shortcuts for DAG editor
+  useEffect(() => {
+    if (dagPanelTab !== 'editor') return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDagSelectedNodeId(null);
+      if ((e.key === 'Delete' || e.key === 'Backspace') && dagEditMode && dagSelectedNodeId) {
+        const target = e.target as HTMLElement;
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+        handleDagDeleteNode(dagSelectedNodeId);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [dagPanelTab, dagEditMode, dagSelectedNodeId, handleDagDeleteNode]);
+
+  const toggleWorkflowEndpoint = (kind: 'source' | 'destination', endpointId: string) => {
+    if (!selectedPipelineId) return;
+    setWorkflowConfigByPipeline(prev => {
+      const fallback: PipelineWorkflowConfig = {
+        sourceIds: sourceCatalog.filter(source => source.active).map(source => source.id),
+        destinationIds: destinationCatalog.filter(destination => destination.active).map(destination => destination.id),
+      };
+      const current = prev[selectedPipelineId] ?? fallback;
+      const key = kind === 'source' ? 'sourceIds' : 'destinationIds';
+      const activeIds = current[key];
+      const nextIds = activeIds.includes(endpointId)
+        ? activeIds.filter(id => id !== endpointId)
+        : [...activeIds, endpointId];
+      return {
+        ...prev,
+        [selectedPipelineId]: {
+          ...current,
+          [key]: nextIds,
+        },
+      };
+    });
+  };
+
+  const applyWorkflowProfile = (profile: WorkflowProfile) => {
+    if (!selectedPipelineId) return;
+    setWorkflowProfileByPipeline(prev => ({ ...prev, [selectedPipelineId]: profile }));
+    if (profile === 'fast') {
+      setStageStats([
+        { executors: 3, subtasks: 68, bp: '낮음' },
+        { executors: 5, subtasks: 156, bp: '중간' },
+        { executors: 3, subtasks: 90, bp: '낮음' },
+        { executors: 3, subtasks: 64, bp: '낮음' },
+      ]);
+      setThroughput('9.8 GB/s');
+      setMetrics(prev => ({ ...prev, latency: 15.2 }));
+      push('INFO', `${selectedPipeline.name} 워크플로우를 고속 모드로 조정했습니다.`);
+      return;
+    }
+    if (profile === 'safe') {
+      setStageStats([
+        { executors: 2, subtasks: 44, bp: '없음' },
+        { executors: 3, subtasks: 92, bp: '없음' },
+        { executors: 4, subtasks: 124, bp: '낮음' },
+        { executors: 2, subtasks: 36, bp: '없음' },
+      ]);
+      setThroughput('6.7 GB/s');
+      setMetrics(prev => ({ ...prev, latency: 10.1 }));
+      push('INFO', `${selectedPipeline.name} 워크플로우를 안정 모드로 조정했습니다.`);
+      return;
+    }
+    setStageStats([
+      { executors: 2, subtasks: 52, bp: '없음' },
+      { executors: 4, subtasks: 128, bp: '낮음' },
+      { executors: 3, subtasks: 96, bp: '낮음' },
+      { executors: 2, subtasks: 40, bp: '없음' },
+    ]);
+    setThroughput('8.4 GB/s');
+    setMetrics(prev => ({ ...prev, latency: 12.4 }));
+    push('INFO', `${selectedPipeline.name} 워크플로우를 균형 모드로 조정했습니다.`);
+  };
 
   /** running 동안 실시간 로그 스트림 시뮬레이션 */
   useEffect(() => {
@@ -259,7 +653,9 @@ export const OrchestrationView = () => {
             onClick={handlePause}
             disabled={status !== 'running'}
             className={`flex items-center gap-2 px-5 py-2 rounded-md font-medium text-sm transition-colors ${
-              status !== 'running' ? 'text-surface-muted cursor-not-allowed' : 'hover:bg-white/5 text-text-dim'
+              status !== 'running'
+                ? 'text-surface-muted/40 cursor-not-allowed opacity-40'
+                : 'border border-yellow-400/40 text-yellow-300 hover:bg-yellow-400/10'
             }`}
           >
             <Pause className="w-3.5 h-3.5" />Pause
@@ -275,6 +671,37 @@ export const OrchestrationView = () => {
       </header>
 
       <div className="grid grid-cols-12 gap-6">
+        {/* Pipeline Instances from Governance */}
+        <div className="col-span-12 bg-surface-card/25 rounded-xl border border-white/5 p-4">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-surface-muted">Pipeline Instances</p>
+            <span className="text-[11px] text-accent font-semibold">{pipelineInstances.length}개</span>
+          </div>
+          {pipelineInstances.length === 0 ? (
+            <p className="text-xs text-surface-muted">Pipeline 탭에서 파이프라인을 추가하면 여기에 표시됩니다.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {pipelineInstances.slice(0, 8).map(pipeline => (
+                <button
+                  key={pipeline.id}
+                  type="button"
+                  onClick={() => setSelectedPipelineId(pipeline.id)}
+                  className={`px-3 py-2 rounded-lg border text-left transition-colors ${
+                    selectedPipelineId === pipeline.id
+                      ? 'border-accent/40 bg-accent/10'
+                      : 'border-white/10 bg-primary/50 hover:border-accent/25'
+                  }`}
+                >
+                  <p className="text-xs font-semibold text-text-bright">{pipeline.name}</p>
+                  <p className="text-[10px] text-surface-muted">
+                    소스 {pipeline.sourceCount} · 규칙 {pipeline.ruleCount} · 목적지 {pipeline.destinationCount} · {pipeline.scheduleMode}
+                  </p>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Metrics */}
         {metricItems.map((m, i) => (
           <div key={i} className="col-span-12 lg:col-span-4 bg-surface-card/30 rounded-xl p-6 border border-white/5">
@@ -290,19 +717,150 @@ export const OrchestrationView = () => {
         ))}
 
         {/* Node Canvas */}
-        <div className="col-span-12 xl:col-span-8 bg-surface-card/20 rounded-xl relative overflow-hidden border border-white/5">
+        <div className="col-span-12 xl:col-span-8 bg-surface-card/20 rounded-xl relative overflow-hidden border border-white/10 shadow-[0_0_0_1px_rgba(255,255,255,0.03)]">
           {/* Canvas header */}
           <div className="px-6 py-3 border-b border-white/5 flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-surface-muted">Pipeline DAG — 제조 센서 실시간 수집</span>
-              <p className="text-[10px] text-text-dim/80 mt-0.5 tracking-normal">처리 단계(스테이지). 물리 노드 8대와는 다른 개념입니다.</p>
-            </div>
             <div className="flex items-center gap-3">
-              <span className="text-[11px] text-surface-muted">Throughput</span>
-              <span className={`text-[11px] font-bold font-mono ${status === 'running' ? 'text-accent' : 'text-surface-muted'}`}>{throughput}</span>
+              {/* Tab buttons */}
+              <div className="flex items-center bg-primary/60 rounded-lg p-0.5 border border-white/5">
+                <button
+                  type="button"
+                  onClick={() => setDagPanelTab('runtime')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-semibold transition-colors ${
+                    dagPanelTab === 'runtime'
+                      ? 'bg-surface-card text-text-bright shadow-sm'
+                      : 'text-surface-muted hover:text-text-dim'
+                  }`}
+                >
+                  <Play className="w-3 h-3" />
+                  Runtime DAG
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setDagPanelTab('editor'); setDagSelectedNodeId(null); }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-semibold transition-colors ${
+                    dagPanelTab === 'editor'
+                      ? 'bg-surface-card text-text-bright shadow-sm'
+                      : 'text-surface-muted hover:text-text-dim'
+                  }`}
+                >
+                  <GitFork className="w-3 h-3" />
+                  DAG Editor
+                </button>
+              </div>
+              {dagPanelTab === 'runtime' && (
+                <p className="text-[10px] text-text-dim/70 tracking-normal hidden sm:block">처리 단계(스테이지). 물리 노드 8대와는 다른 개념입니다.</p>
+              )}
+            </div>
+            <div className="flex items-center gap-3 flex-wrap">
+              {/* Runtime tab: workflow profile + throughput */}
+              {dagPanelTab === 'runtime' && (
+                <>
+                  {selectedPipeline && (
+                    <div className="flex items-center gap-1.5">
+                      {([
+                        { id: 'fast', label: '고속' },
+                        { id: 'balanced', label: '균형' },
+                        { id: 'safe', label: '안정' },
+                      ] as const).map(profile => (
+                        <button
+                          key={profile.id}
+                          type="button"
+                          onClick={() => applyWorkflowProfile(profile.id)}
+                          className={`px-2.5 py-1 rounded-md text-[10px] font-semibold border transition-colors ${
+                            selectedWorkflowProfile === profile.id
+                              ? 'border-accent/40 bg-accent/10 text-accent'
+                              : 'border-white/10 bg-primary/60 text-surface-muted hover:text-text-bright'
+                          }`}
+                        >
+                          {profile.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <span className="text-[11px] text-surface-muted">Throughput</span>
+                  <span className={`text-[11px] font-bold font-mono ${status === 'running' ? 'text-accent' : 'text-surface-muted'}`}>{throughput}</span>
+                </>
+              )}
+              {/* Editor tab: edit mode toggle */}
+              {dagPanelTab === 'editor' && (
+                <button
+                  type="button"
+                  onClick={() => { setDagEditMode(e => !e); setDagSelectedNodeId(null); }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition-colors ${
+                    dagEditMode
+                      ? 'bg-primary/80 text-text-bright border-white/20'
+                      : 'border-white/10 text-surface-muted hover:text-text-dim hover:bg-white/5'
+                  }`}
+                >
+                  {dagEditMode ? <Eye className="w-3 h-3" /> : <Pencil className="w-3 h-3" />}
+                  {dagEditMode ? '보기 모드' : '편집 모드'}
+                </button>
+              )}
             </div>
           </div>
 
+          <AnimatePresence mode="wait" initial={false}>
+          {dagPanelTab === 'editor' ? (
+            <motion.div
+              key="dag-editor"
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+              className="flex h-[560px] md:h-[620px]"
+            >
+              {/* Node palette (edit mode only) */}
+              {dagEditMode && (
+                <div className="w-44 shrink-0 border-r border-white/5 p-3 overflow-y-auto custom-scrollbar">
+                  <DagNodePalette onAddNode={handlePaletteAddNode} />
+                </div>
+              )}
+              {/* DAG canvas */}
+              <div className="flex-1 min-w-0 p-3 rounded-lg border border-white/10">
+                {selectedPipelineId && dagByPipeline[selectedPipelineId] ? (
+                  <DagCanvas
+                    nodes={dagByPipeline[selectedPipelineId].nodes}
+                    edges={dagByPipeline[selectedPipelineId].edges}
+                    isEditMode={dagEditMode}
+                    isRunning={status === 'running'}
+                    selectedNodeId={dagSelectedNodeId}
+                    onSelectNode={setDagSelectedNodeId}
+                    onMoveNode={handleDagMoveNode}
+                    onAddEdge={handleDagAddEdge}
+                    onDeleteEdge={handleDagDeleteEdge}
+                    onAddNode={handleDagAddNode}
+                    onQuickAddNode={handleQuickAddConnectedNode}
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center dag-canvas-bg rounded-xl border border-white/5">
+                    <p className="text-xs text-surface-muted">파이프라인을 선택하세요</p>
+                  </div>
+                )}
+              </div>
+              {/* Node config panel */}
+              {dagSelectedNodeId && selectedPipelineId && dagByPipeline[selectedPipelineId] && (
+                <div className="w-64 shrink-0 border-l border-white/5">
+                  <DagNodeConfigPanel
+                    node={dagByPipeline[selectedPipelineId].nodes.find(n => n.id === dagSelectedNodeId) ?? null}
+                    isEditMode={dagEditMode}
+                    onClose={() => setDagSelectedNodeId(null)}
+                    onUpdateLabel={handleDagUpdateLabel}
+                    onUpdateSubLabel={handleDagUpdateSubLabel}
+                    onUpdateConfig={handleDagUpdateConfig}
+                    onDeleteNode={handleDagDeleteNode}
+                  />
+                </div>
+              )}
+            </motion.div>
+          ) : (
+            <motion.div
+              key="runtime-dag"
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+            >
           {/* Top row: 4-stage pipeline */}
           <div className="px-6 pt-6 pb-3 flex items-stretch gap-0">
             {/* Stage 1: Ingress */}
@@ -451,48 +1009,52 @@ export const OrchestrationView = () => {
             {/* Sources */}
             <div className="bg-primary/40 rounded-lg p-3 border border-white/5">
               <p className="text-[10px] font-semibold text-surface-muted uppercase tracking-wide mb-2">Data Sources</p>
+              <p className="mb-2 text-[10px] text-surface-muted/80">선택한 파이프라인 기준으로 클릭 시 포함/제외</p>
               <div className="flex flex-wrap gap-1.5">
-                {[
-                  { label: 'MQTT', sub: 'EQ-MOTOR/PUMP/COMP', active: true },
-                  /** 현장 SCADA·PLC 등 설비 표준 연동 채널 — UI에는 출처 중심 라벨 */
-                  { label: '현장 SCADA', sub: '설비 표준 연동 · 4840', active: true },
-                  { label: 'SQL', sub: 'MES Master DB', active: false },
-                ].map(src => (
-                  <div key={src.label + src.sub}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-medium ${
-                      src.active && status === 'running'
+                {sourceCatalog.map(src => {
+                  const isActive = selectedWorkflowConfig
+                    ? selectedWorkflowConfig.sourceIds.includes(src.id)
+                    : src.active;
+                  return (
+                  <button key={src.id}
+                    type="button"
+                    onClick={() => toggleWorkflowEndpoint('source', src.id)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-medium transition-colors ${
+                      isActive && status === 'running'
                         ? 'bg-accent/5 border-accent/20 text-accent'
-                        : 'bg-white/3 border-white/5 text-surface-muted'
+                        : 'bg-white/3 border-white/5 text-surface-muted hover:border-accent/30 hover:text-text-bright'
                     }`}>
-                    <div className={`w-1 h-1 rounded-full ${src.active && status === 'running' ? 'bg-accent animate-pulse' : 'bg-surface-muted'}`} />
-                    <span>{src.label}</span>
+                    <div className={`w-1 h-1 rounded-full ${isActive && status === 'running' ? 'bg-accent animate-pulse' : 'bg-surface-muted'}`} />
+                    <span>{src.tag}</span>
                     <span className="text-surface-muted font-normal opacity-70">{src.sub}</span>
-                  </div>
-                ))}
+                  </button>
+                );})}
               </div>
             </div>
 
             {/* Destinations */}
             <div className="bg-primary/40 rounded-lg p-3 border border-white/5">
               <p className="text-[10px] font-semibold text-surface-muted uppercase tracking-wide mb-2">Destinations</p>
+              <p className="mb-2 text-[10px] text-surface-muted/80">선택한 파이프라인 기준으로 클릭 시 포함/제외</p>
               <div className="flex flex-wrap gap-1.5">
-                {[
-                  { label: 'HDFS', sub: 'Cold Archive', active: true },
-                  { label: 'MES', sub: 'RT Feed', active: true },
-                  { label: 'SCADA', sub: 'Historian', active: true },
-                  { label: 'Azure DL', sub: 'Backup', active: false },
-                ].map(dst => (
-                  <div key={dst.label}
-                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-medium ${
-                      dst.active && status === 'running'
+                {destinationCatalog.map(dst => {
+                  const isActive = selectedWorkflowConfig
+                    ? selectedWorkflowConfig.destinationIds.includes(dst.id)
+                    : dst.active;
+                  return (
+                  <button key={dst.id}
+                    type="button"
+                    onClick={() => toggleWorkflowEndpoint('destination', dst.id)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[10px] font-medium transition-colors ${
+                      isActive && status === 'running'
                         ? 'bg-accent/5 border-accent/20 text-accent'
-                        : 'bg-white/3 border-white/5 text-surface-muted'
+                        : 'bg-white/3 border-white/5 text-surface-muted hover:border-accent/30 hover:text-text-bright'
                     }`}>
-                    <div className={`w-1 h-1 rounded-full ${dst.active && status === 'running' ? 'bg-accent' : 'bg-surface-muted'}`} />
-                    <span>{dst.label}</span>
-                    <span className="text-surface-muted font-normal opacity-70">{dst.sub}</span>
-                  </div>
-                ))}
+                    <div className={`w-1 h-1 rounded-full ${isActive && status === 'running' ? 'bg-accent' : 'bg-surface-muted'}`} />
+                    <span>{dst.type}</span>
+                    <span className="text-surface-muted font-normal opacity-70">{dst.label}</span>
+                  </button>
+                );})}
               </div>
             </div>
           </div>
@@ -565,6 +1127,9 @@ export const OrchestrationView = () => {
               </table>
             </div>
           </div>
+            </motion.div>
+          )}
+          </AnimatePresence>
         </div>
 
         {/* Logs + Workers */}

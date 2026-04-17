@@ -368,12 +368,14 @@ function translateAutomlError(raw: string): string | null {
  */
 function decideAutomlTask(
   fileClassCounts: Record<string, number> | null,
-  dataPreview: { headers: string[]; rows: string[][] } | null
+  dataPreview: { headers: string[]; rows: string[][] } | null,
+  selectedLabelColumn: string
 ): 'classification' | 'regression' {
   if (fileClassCounts !== null) return 'classification';
   if (!dataPreview || dataPreview.rows.length === 0) return 'regression';
-  const lastIdx = dataPreview.headers.length - 1;
-  const targetValues = dataPreview.rows.map((r) => r[lastIdx]).filter((v) => v !== '');
+  const selectedTargetIdx = dataPreview.headers.indexOf(selectedLabelColumn);
+  const targetIdx = selectedTargetIdx >= 0 ? selectedTargetIdx : dataPreview.headers.length - 1;
+  const targetValues = dataPreview.rows.map((r) => r[targetIdx]).filter((v) => v !== '');
   if (targetValues.length === 0) return 'regression';
   if (targetValues.some((v) => Number.isNaN(Number(v)))) return 'classification';
   const unique = [...new Set(targetValues)];
@@ -392,9 +394,10 @@ type AutomlTaskMode = 'auto' | 'classification' | 'regression';
 function resolveAutomlTaskForAnalysis(
   mode: AutomlTaskMode,
   fileClassCounts: Record<string, number> | null,
-  dataPreview: { headers: string[]; rows: string[][] } | null
+  dataPreview: { headers: string[]; rows: string[][] } | null,
+  selectedLabelColumn: string
 ): 'classification' | 'regression' {
-  if (mode === 'auto') return decideAutomlTask(fileClassCounts, dataPreview);
+  if (mode === 'auto') return decideAutomlTask(fileClassCounts, dataPreview, selectedLabelColumn);
   return mode;
 }
 
@@ -518,19 +521,23 @@ function getEligibleAugmentationWaveColumns(preview: { headers: string[]; rows: 
  * 시계열 증강 미리보기: 레코드 인덱스(X) 축에서 원본 구간 뒤에 증강 구간이 이어지는 시뮬 파형.
  * 실제 시계열 값이 없을 때 참고 UI(원본·샘플 구간 연속 표시)용입니다.
  */
-function buildTimeseriesWavePreview(baseCount: number, timeseriesAdded: number): {
-  data: { x: number; 원본: number | null; 증강: number | null }[];
+function buildTimeseriesWavePreview(baseCount: number, timeseriesAdded: number, smoteAdded = 0): {
+  data: { x: number; 원본: number | null; SMOTE: number | null; 시계열: number | null }[];
   splitX: number;
   yDomain: [number, number];
 } {
-  const total = Math.max(baseCount + timeseriesAdded, 1);
+  const totalAug = Math.max(timeseriesAdded + smoteAdded, 0);
+  const total = Math.max(baseCount + totalAug, 1);
   const pts = 220;
-  const totalX = Math.max(Math.round(baseCount + timeseriesAdded), 1);
+  const totalX = Math.max(Math.round(baseCount + totalAug), 1);
   const split =
     total > 0 ? Math.min(pts - 1, Math.max(1, Math.round((pts * baseCount) / total))) : pts;
-  const data: { x: number; 원본: number | null; 증강: number | null }[] = [];
+  const data: { x: number; 원본: number | null; SMOTE: number | null; 시계열: number | null }[] = [];
   let yMin = Infinity;
   let yMax = -Infinity;
+  const augPts = Math.max(1, pts - split);
+  const smotePts =
+    totalAug > 0 ? Math.min(augPts, Math.max(0, Math.round((augPts * smoteAdded) / totalAug))) : 0;
   const pushY = (y: number) => {
     yMin = Math.min(yMin, y);
     yMax = Math.max(yMax, y);
@@ -539,12 +546,20 @@ function buildTimeseriesWavePreview(baseCount: number, timeseriesAdded: number):
     const x = Math.round((i / (pts - 1)) * totalX);
     const y = 100 + 48 * Math.sin(i * 0.16) + 14 * Math.sin(i * 0.42);
     if (i < split) {
-      data.push({ x, 원본: y, 증강: null });
+      data.push({ x, 원본: y, SMOTE: null, 시계열: null });
       pushY(y);
     } else {
-      const yAug = y + 10 * Math.sin((i - split) * 0.32 + 0.5);
-      data.push({ x, 원본: null, 증강: yAug });
-      pushY(yAug);
+      const j = i - split;
+      if (j < smotePts && smoteAdded > 0) {
+        const ySmote = y + 7 * Math.sin(j * 0.29 + 0.45);
+        data.push({ x, 원본: null, SMOTE: ySmote, 시계열: null });
+        pushY(ySmote);
+      } else {
+        const k = Math.max(0, j - smotePts);
+        const yTs = y + 10 * Math.sin(k * 0.32 + 0.5);
+        data.push({ x, 원본: null, SMOTE: null, 시계열: yTs });
+        pushY(yTs);
+      }
     }
   }
   const splitX = Math.round((split / (pts - 1)) * totalX);
@@ -628,17 +643,18 @@ function buildColumnAugmentationWave(
   preview: { headers: string[]; rows: string[][] } | null,
   baseCount: number,
   timeseriesAdded: number,
+  smoteAdded: number,
   strategy: PreprocConfig['timeseriesStrategy'],
   jitterNoiseStdPct: number,
   windowRatio: number,
   overlapRatio: number,
 ): {
-  data: { x: number; 원본: number | null; 증강: number | null }[];
+  data: { x: number; 원본: number | null; SMOTE: number | null; 시계열: number | null }[];
   splitX: number;
   yDomain: [number, number];
   source: 'column_sample' | 'simulated';
 } {
-  const fallback = () => ({ ...buildTimeseriesWavePreview(baseCount, timeseriesAdded), source: 'simulated' as const });
+  const fallback = () => ({ ...buildTimeseriesWavePreview(baseCount, timeseriesAdded, smoteAdded), source: 'simulated' as const });
   if (!preview || !columnHeader) return fallback();
   const colIdx = preview.headers.indexOf(columnHeader);
   const targetIdx = preview.headers.length - 1;
@@ -649,8 +665,9 @@ function buildColumnAugmentationWave(
   const isNumericCol = cells.length > 0 && nums.length >= cells.length * 0.6;
   if (!isNumericCol || nums.length < 2) return fallback();
 
-  const total = Math.max(baseCount + timeseriesAdded, 1);
-  const totalX = Math.max(Math.round(baseCount + timeseriesAdded), 1);
+  const totalAug = Math.max(timeseriesAdded + smoteAdded, 0);
+  const total = Math.max(baseCount + totalAug, 1);
+  const totalX = Math.max(Math.round(baseCount + totalAug), 1);
   const pts = 220;
   const split = Math.min(pts - 1, Math.max(1, Math.round((pts * baseCount) / total)));
 
@@ -676,7 +693,10 @@ function buildColumnAugmentationWave(
   let yMax = Math.max(...origSlice);
   const span = yMax > yMin ? yMax - yMin : Math.max(Math.abs(yMax), 1);
 
-  const data: { x: number; 원본: number | null; 증강: number | null }[] = [];
+  const data: { x: number; 원본: number | null; SMOTE: number | null; 시계열: number | null }[] = [];
+  const augPts = Math.max(1, pts - split);
+  const smotePts =
+    totalAug > 0 ? Math.min(augPts, Math.max(0, Math.round((augPts * smoteAdded) / totalAug))) : 0;
   /** 원본 구간도 시각적으로 곡선처럼 보이도록 미세 리플(증강 경계 몇 점 전에서 0으로 수렴) */
   const origRippleEdge = Math.max(3, Math.min(Math.floor(split * 0.12), 28));
   for (let i = 0; i < pts; i++) {
@@ -690,16 +710,25 @@ function buildColumnAugmentationWave(
       const y = yBase + ripple;
       yMin = Math.min(yMin, y);
       yMax = Math.max(yMax, y);
-      data.push({ x, 원본: y, 증강: null });
+      data.push({ x, 원본: y, SMOTE: null, 시계열: null });
     } else {
       const j = i - split;
-      const jitterAmp = clamp(jitterNoiseStdPct / 100, 0.002, 0.04);
-      const windowAmp = clamp((1 - windowRatio) * 0.28 + overlapRatio * 0.06, 0.02, 0.14);
-      const amp = strategy === 'jitter' ? jitterAmp : windowAmp;
-      let y = yBase + span * amp * Math.sin(j * 0.85) + span * (amp * 0.45) * Math.sin(j * 0.27 + 1);
-      yMin = Math.min(yMin, y);
-      yMax = Math.max(yMax, y);
-      data.push({ x, 원본: null, 증강: y });
+      if (j < smotePts && smoteAdded > 0) {
+        const smoteAmp = clamp((jitterNoiseStdPct / 100) * 0.6 + 0.01, 0.008, 0.05);
+        const ySmote = yBase + span * smoteAmp * Math.sin(j * 0.62 + 0.35);
+        yMin = Math.min(yMin, ySmote);
+        yMax = Math.max(yMax, ySmote);
+        data.push({ x, 원본: null, SMOTE: ySmote, 시계열: null });
+      } else {
+        const k = Math.max(0, j - smotePts);
+        const jitterAmp = clamp(jitterNoiseStdPct / 100, 0.002, 0.04);
+        const windowAmp = clamp((1 - windowRatio) * 0.28 + overlapRatio * 0.06, 0.02, 0.14);
+        const amp = strategy === 'jitter' ? jitterAmp : windowAmp;
+        const yTs = yBase + span * amp * Math.sin(k * 0.85) + span * (amp * 0.45) * Math.sin(k * 0.27 + 1);
+        yMin = Math.min(yMin, yTs);
+        yMax = Math.max(yMax, yTs);
+        data.push({ x, 원본: null, SMOTE: null, 시계열: yTs });
+      }
     }
   }
   const splitX = Math.round((split / (pts - 1)) * totalX);
@@ -904,6 +933,8 @@ const App: React.FC = () => {
   const [uploadedProcessFile, setUploadedProcessFile] = useState<File | null>(null);
   /** 업로드 파일 파싱 실패 시 사유 (분석 실행 시 설정, 파일 제거/재선택 시 초기화) */
   const [uploadParseError, setUploadParseError] = useState<string | null>(null);
+  /** 전처리 탭: AutoML target(label) 컬럼. 비어 있으면 마지막 컬럼을 기본 사용합니다. */
+  const [selectedLabelColumn, setSelectedLabelColumn] = useState<string>('');
   const processFileInputRef = React.useRef<HTMLInputElement>(null);
 
   const handleCollapsedChange = (collapsed: boolean) => {
@@ -944,7 +975,8 @@ const App: React.FC = () => {
 
       // ── 전체 파일에서 실제 통계 계산 ──
       const recordsCount = lines.length - 1;
-      const lastIdx = headers.length - 1;
+      const selectedTargetIdx = headers.indexOf(selectedLabelColumn);
+      const targetIdx = selectedTargetIdx >= 0 ? selectedTargetIdx : headers.length - 1;
 
       // 결측치 집계 (최대 500행 샘플, 전체 비율로 추정)
       const statSample = lines.slice(1, 501).map((l) => l.split(delim).map(strip));
@@ -954,7 +986,8 @@ const App: React.FC = () => {
 
       // 수치형 컬럼 변동계수(CV) 평균으로 noiseLevel 추정
       const numericColVals: number[][] = [];
-      headers.slice(0, lastIdx).forEach((_, ci) => {
+      headers.forEach((_, ci) => {
+        if (ci === targetIdx) return;
         const vals = statSample.map((r) => r[ci]).filter((v) => v !== '' && !Number.isNaN(Number(v))).map(Number);
         if (vals.length >= statSample.length * 0.5) numericColVals.push(vals);
       });
@@ -970,7 +1003,7 @@ const App: React.FC = () => {
       }
 
       setDataProfile({
-        features: headers.slice(0, lastIdx),
+        features: headers.filter((_, idx) => idx !== targetIdx),
         recordsCount,
         missingValues,
         noiseLevel,
@@ -981,7 +1014,7 @@ const App: React.FC = () => {
       // 타겟 컬럼 전수 집계 → 분류 여부 판단 후 클래스 분포 저장
       const allTargetValues = lines.slice(1).map((l) => {
         const cells = l.split(delim).map(strip);
-        return cells[lastIdx] ?? '';
+        return cells[targetIdx] ?? '';
       }).filter((v) => v !== '');
       const uniqueTargetVals = [...new Set(allTargetValues)];
       // 문자열 레이블이거나, 숫자여도 정수·고유값 ≤ 20·비율 < 10% 이면 분류로 판단
@@ -1001,7 +1034,7 @@ const App: React.FC = () => {
       }
     })();
     return () => { cancelled = true; };
-  }, [uploadedProcessFile]);
+  }, [uploadedProcessFile, selectedLabelColumn]);
 
   const [industry, setIndustry] = useState<IndustryType>(IndustryType.SEMICONDUCTOR);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -1040,6 +1073,16 @@ const App: React.FC = () => {
   useEffect(() => {
     setStructureMapSelectedNode(null);
   }, [uploadedProcessFile, selectedTemplate, analysisResult]);
+  useEffect(() => {
+    if (!dataPreview || dataPreview.headers.length === 0) {
+      setSelectedLabelColumn('');
+      return;
+    }
+    setSelectedLabelColumn((prev) => {
+      if (prev && dataPreview.headers.includes(prev)) return prev;
+      return dataPreview.headers[dataPreview.headers.length - 1] ?? '';
+    });
+  }, [dataPreview]);
   const [analysisColumn, setAnalysisColumn] = useState<string>('');
   const [analysisClassFilter, setAnalysisClassFilter] = useState<string[]>([]);
   const [extraColumns, setExtraColumns] = useState<string[]>([]);
@@ -1127,7 +1170,7 @@ const App: React.FC = () => {
     let target: number[] = [0, 1, 0, 1, 0, 1, 0, 1, 0, 1];
 
     if (uploadedProcessFile) {
-      const parseResult = await parseCsvForAutoml(uploadedProcessFile);
+      const parseResult = await parseCsvForAutoml(uploadedProcessFile, selectedLabelColumn || undefined);
       if (parseResult.ok) {
         setUploadParseError(null);
         profile = parseResult.data.profile;
@@ -1151,7 +1194,7 @@ const App: React.FC = () => {
       ? selectedTemplate.visualizationMethods
       : null;
 
-    const automlTask = resolveAutomlTaskForAnalysis(automlTaskMode, fileClassCounts, dataPreview);
+    const automlTask = resolveAutomlTaskForAnalysis(automlTaskMode, fileClassCounts, dataPreview, selectedLabelColumn);
     const configuredMethods = preprocCompleted ? preprocMethodsFromConfig(preprocConfig) : DEFAULT_PREPROCESSING_METHODS;
     const automlFallbackBase = getMockAutomlResult(automlTask);
     if (automlTask === 'classification') {
@@ -1220,6 +1263,12 @@ const App: React.FC = () => {
     setIsProcessing(false);
   };
 
+  const selectedLabelIndex = dataPreview
+    ? (dataPreview.headers.indexOf(selectedLabelColumn) >= 0
+      ? dataPreview.headers.indexOf(selectedLabelColumn)
+      : dataPreview.headers.length - 1)
+    : -1;
+
   const radarData = useMemo(() => {
     if (!analysisResult) return [];
     return analysisResult.matches.map((m) => {
@@ -1234,8 +1283,8 @@ const App: React.FC = () => {
 
   // 분류/회귀: 전처리 탭 AutoML 모드(자동/강제)와 동일 기준 — 컬럼 탐색·SMOTE 안내와 맞춤
   const isClassificationTask = useMemo(
-    () => resolveAutomlTaskForAnalysis(automlTaskMode, fileClassCounts, dataPreview) === 'classification',
-    [automlTaskMode, dataPreview, fileClassCounts]
+    () => resolveAutomlTaskForAnalysis(automlTaskMode, fileClassCounts, dataPreview, selectedLabelColumn) === 'classification',
+    [automlTaskMode, dataPreview, fileClassCounts, selectedLabelColumn]
   );
 
   useEffect(() => {
@@ -1343,15 +1392,44 @@ const App: React.FC = () => {
     let classDistData: { name: string; before: number; after: number }[] | null = null;
     if (fileClassCounts && Object.keys(fileClassCounts).length > 0) {
       const counts = fileClassCounts as Record<string, number>;
-      const maxCount = Math.max(...Object.values(counts));
-      classDistData = Object.entries(counts).map(([name, count]) => {
-        const after = preprocConfig.smoteEnabled
-          ? (preprocConfig.smoteStrategy === 'auto' || preprocConfig.smoteStrategy === 'minority'
-            ? maxCount
-            : Math.round(count * 1.3))
-          : count;
-        return { name, before: count, after };
-      });
+      const entries = Object.entries(counts).map(([name, count]) => ({ name, count }));
+      const allocByClass: Record<string, number> = {};
+      entries.forEach((e) => { allocByClass[e.name] = 0; });
+
+      /**
+       * SMOTE 시뮬 총량(smoteAdded)을 클래스별로 분배해
+       * Stacked Area의 "합성" 레이어가 토글 상태와 항상 일관되게 보이도록 맞춘다.
+       */
+      if (preprocConfig.smoteEnabled && smoteAdded > 0 && entries.length > 0) {
+        const maxCount = Math.max(...entries.map((e) => e.count));
+        const minCount = Math.min(...entries.map((e) => e.count));
+        const minorityClasses = entries.filter((e) => e.count === minCount);
+        const nonMajorityClasses = entries.filter((e) => e.count < maxCount);
+        const targets =
+          preprocConfig.smoteStrategy === 'not_majority'
+            ? (nonMajorityClasses.length > 0 ? nonMajorityClasses : entries)
+            : (minorityClasses.length > 0 ? minorityClasses : entries);
+
+        let remaining = smoteAdded;
+        const weights = targets.map((e) => Math.max(1, maxCount - e.count));
+        const weightSum = weights.reduce((a, b) => a + b, 0);
+        targets.forEach((target, idx) => {
+          const raw = idx === targets.length - 1
+            ? remaining
+            : Math.max(0, Math.round((smoteAdded * (weights[idx] ?? 0)) / Math.max(weightSum, 1)));
+          const allocated = Math.min(raw, remaining);
+          allocByClass[target.name] = allocated;
+          remaining -= allocated;
+        });
+        // 반올림 오차 보정: 아직 남은 건 첫 타깃에 추가
+        if (remaining > 0 && targets[0]) allocByClass[targets[0].name] += remaining;
+      }
+
+      classDistData = entries.map(({ name, count }) => ({
+        name,
+        before: count,
+        after: count + (allocByClass[name] ?? 0),
+      }));
     }
 
     // 스택 바 차트용: 원본 + 합성(delta) 분리
@@ -1373,8 +1451,13 @@ const App: React.FC = () => {
       irAfter  = aMin > 0 ? Math.round((aMax / aMin) * 10) / 10 : null;
     }
 
-    /** 시계열 Bar: 원본만 / 누적(원본+증강) 두 차트용 */
-    const timeseriesYMax = Math.max(baseCount + timeseriesAdded, 1);
+    /**
+     * 시계열 Bar(증강 후 누적): 원본 + SMOTE + 시계열을 분리 스택으로 시각화.
+     * 파형/도넛 등 시계열 전용 뷰는 timeseriesAdded(시계열만) 값을 그대로 사용한다.
+     */
+    const timeseriesSmoteAdded = preprocConfig.smoteEnabled ? smoteAdded : 0;
+    const timeseriesStackedAdded = timeseriesSmoteAdded + timeseriesAdded;
+    const timeseriesYMax = Math.max(baseCount + timeseriesStackedAdded, 1);
     const timeseriesOriginalOnly =
       preprocConfig.timeseriesEnabled && hasTimeSeriesColumn
         ? [{ name: '원본', 원본: baseCount }]
@@ -1385,7 +1468,8 @@ const App: React.FC = () => {
             {
               name: '증강 후',
               원본: baseCount,
-              증강: timeseriesAdded,
+              SMOTE: timeseriesSmoteAdded,
+              시계열: timeseriesAdded,
             },
           ]
         : null;
@@ -1402,6 +1486,7 @@ const App: React.FC = () => {
             dataPreview,
             baseCount,
             timeseriesAdded,
+            preprocConfig.smoteEnabled ? smoteAdded : 0,
             preprocConfig.timeseriesStrategy,
             preprocConfig.jitterNoiseStdPct,
             preprocConfig.windowRatio,
@@ -1417,6 +1502,8 @@ const App: React.FC = () => {
       /** Ratio·범례에서 SMOTE와 시계열 증강을 분리 표시할 때 사용 */
       smoteAdded,
       timeseriesAdded,
+      timeseriesSmoteAdded,
+      timeseriesStackedAdded,
       classDistData,
       stackedData,
       timeseriesData,
@@ -1436,11 +1523,10 @@ const App: React.FC = () => {
 
   const preprocAfterSample = useMemo(() => {
     if (!dataPreview) return null;
-    const lastIdx = dataPreview.headers.length - 1;
     const labelMap: Record<string, number> = {};
     let nextId = 0;
     dataPreview.rows.forEach((row) => {
-      const v = row[lastIdx];
+      const v = row[selectedLabelIndex];
       if (v !== '' && Number.isNaN(Number(v)) && !(v in labelMap)) labelMap[v] = nextId++;
     });
     const missingPlaceholder: Record<PreprocConfig['missingStrategy'], string> = {
@@ -1448,7 +1534,7 @@ const App: React.FC = () => {
     };
     const afterRows = dataPreview.rows.map((row) =>
       row.map((cell, ci) => {
-        if (ci === lastIdx) {
+        if (ci === selectedLabelIndex) {
           if (cell !== '' && Number.isNaN(Number(cell))) return String(labelMap[cell] ?? 0);
           return cell;
         }
@@ -1457,7 +1543,7 @@ const App: React.FC = () => {
       })
     );
     return { headers: dataPreview.headers, rows: afterRows, labelMap };
-  }, [dataPreview, preprocConfig.missingStrategy]);
+  }, [dataPreview, preprocConfig.missingStrategy, selectedLabelIndex]);
 
   /** 원본 샘플 테이블: 시간 형식 열은 숫자가 아니어도 범주 문자열(amber)이 아닌 일반 본문색으로 표시 */
   const originalPreviewTimeColumnIndices = useMemo(() => {
@@ -2293,6 +2379,21 @@ const App: React.FC = () => {
                   </select>
                   <PreprocHelpTip title="자동은 마지막 컬럼(타깃) 패턴으로 분류·회귀를 고릅니다. 시계열 연속값은 보통 회귀, 문자열·저카디널리티 정수 라벨은 분류입니다. 필요 시 여기서 강제 지정하세요." />
                 </div>
+                {isClassificationTask && dataPreview && dataPreview.headers.length > 1 && (
+                  <div className="flex items-center gap-0.5 shrink-0">
+                    <select
+                      value={selectedLabelColumn}
+                      onChange={(e) => setSelectedLabelColumn(e.target.value)}
+                      className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50 text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer max-w-[12rem]"
+                      aria-label="AutoML 라벨 컬럼"
+                    >
+                      {dataPreview.headers.map((h) => (
+                        <option key={h} value={h}>Label: {h}</option>
+                      ))}
+                    </select>
+                    <PreprocHelpTip title="분류·회귀 공통으로 AutoML의 타깃(정답) 컬럼을 지정합니다. 기본은 마지막 컬럼이며, 컬럼 순서가 다르면 여기서 변경하세요." />
+                  </div>
+                )}
                 <div className="w-px h-4 bg-slate-200 mx-0.5 shrink-0" />
                 <AugmentationMethodToolbar
                   smoteEnabled={preprocConfig.smoteEnabled}
@@ -2761,7 +2862,7 @@ const App: React.FC = () => {
                           onChange={(e) => { setAnalysisColumn(e.target.value); setAnalysisClassFilter([]); setChartTypeOverride(null); setXColumn(''); }}
                           className="text-xs border border-slate-200 rounded-lg px-2 py-1 bg-slate-50 text-slate-700 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
                         >
-                          {dataPreview.headers.slice(0, -1).map((h) => (
+                          {dataPreview.headers.filter((_, idx) => idx !== selectedLabelIndex).map((h) => (
                             <option key={h} value={h}>{h}</option>
                           ))}
                         </select>
@@ -3202,7 +3303,7 @@ const App: React.FC = () => {
                     <>
                       <p className="text-[10px] text-slate-400 mb-2">
                         {preprocConfig.smoteEnabled
-                          ? '막대 아래(진한색)는 클래스별 원본, 위쪽 보라 층은 모두 SMOTE 합성 건수입니다.'
+                          ? '막대 아래(진한색)는 클래스별 원본, 위쪽 보라 층은 시뮬레이션 기반 SMOTE 합성 건수입니다.'
                           : '현재 클래스 분포 · SMOTE 활성화 시 합성 레이어가 추가됩니다'}
                       </p>
                       <div className="w-full min-h-[140px] h-[clamp(140px,22dvh,220px)]">
@@ -3221,12 +3322,12 @@ const App: React.FC = () => {
                               contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
                               formatter={(v: number, name: string) => [
                                 `${v.toLocaleString()}건`,
-                                name === '원본' ? '원본 데이터' : 'SMOTE 합성',
+                                name === '원본' ? '원본 데이터' : 'SMOTE 합성(시뮬)',
                               ]}
                             />
                             <Legend
                               wrapperStyle={{ fontSize: 10 }}
-                              formatter={(v: string) => (v === '원본' ? '원본 데이터' : 'SMOTE 합성')}
+                              formatter={(v: string) => (v === '원본' ? '원본 데이터' : 'SMOTE 합성(시뮬)')}
                             />
                             <Bar
                               dataKey="원본"
@@ -3268,12 +3369,12 @@ const App: React.FC = () => {
                               contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
                               formatter={(v: number, name: string) => [
                                 `${v.toLocaleString()}건`,
-                                name === '원본' ? '원본 데이터' : 'SMOTE 합성',
+                                name === '원본' ? '원본 데이터' : 'SMOTE 합성(시뮬)',
                               ]}
                             />
                             <Legend
                               wrapperStyle={{ fontSize: 10 }}
-                              formatter={(v: string) => (v === '원본' ? '원본 데이터' : 'SMOTE 합성')}
+                              formatter={(v: string) => (v === '원본' ? '원본 데이터' : 'SMOTE 합성(시뮬)')}
                             />
                             <Area
                               type="monotone"
@@ -3301,7 +3402,7 @@ const App: React.FC = () => {
                   ) : preprocChartData.timeseriesData ? (
                     <>
                       <p className="text-[10px] text-slate-400 mb-2">
-                        시계열 증강 전/후 · <span className="font-semibold text-slate-600">{preprocChartData.augWaveColumnEffective}</span> 기준 (
+                        시계열·SMOTE 증강 전/후 누적 (분리 스택) · <span className="font-semibold text-slate-600">{preprocChartData.augWaveColumnEffective}</span> 기준 (
                         {preprocConfig.timeseriesStrategy === 'window' ? 'window slicing' : 'jitter'})
                       </p>
                       {augmentationChartType === 'bar' ? (
@@ -3355,12 +3456,26 @@ const App: React.FC = () => {
                                     contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #e2e8f0' }}
                                     formatter={(v: number, name: string) => [
                                       `${v.toLocaleString()}건`,
-                                      name === '원본' ? '원본 데이터' : '증강(추가)',
+                                      name === '원본'
+                                        ? '원본 데이터'
+                                        : (name === 'SMOTE' ? 'SMOTE 합성(시뮬)' : '시계열 증강(시뮬)'),
                                     ]}
                                   />
-                                  <Legend wrapperStyle={{ fontSize: 10 }} />
+                                  <Legend
+                                    wrapperStyle={{ fontSize: 10 }}
+                                    formatter={(v: string) => (
+                                      v === '원본'
+                                        ? '원본'
+                                        : v === 'SMOTE'
+                                          ? 'SMOTE 합성'
+                                          : '시계열 증강'
+                                    )}
+                                  />
                                   <Bar dataKey="원본" stackId="ts" fill="#94a3b8" radius={[0, 0, 3, 3]} />
-                                  <Bar dataKey="증강" stackId="ts" fill="#0ea5e955" radius={[3, 3, 0, 0]} />
+                                  {preprocConfig.smoteEnabled && (
+                                    <Bar dataKey="SMOTE" stackId="ts" fill="#818cf8aa" />
+                                  )}
+                                  <Bar dataKey="시계열" stackId="ts" fill="#0ea5e955" radius={[3, 3, 0, 0]} />
                                 </BarChart>
                               </ResponsiveContainer>
                             </div>
@@ -3369,7 +3484,7 @@ const App: React.FC = () => {
                       ) : augmentationChartType === 'ratio' ? (
                         <div className="w-full min-h-0 grid grid-cols-1 md:grid-cols-2 gap-3 auto-rows-fr">
                           {(() => {
-                            const timeseriesAdded = preprocChartData.timeseriesData?.[0]?.증강 ?? 0;
+                            const timeseriesAdded = preprocChartData.timeseriesAdded;
                             const smoteAdded = preprocChartData.smoteAdded;
                             const totalAdded = Math.max(0, preprocChartData.afterCount - preprocChartData.baseCount);
                             const totalTimeseries = Math.max(preprocChartData.baseCount + timeseriesAdded, 1);
@@ -3495,13 +3610,15 @@ const App: React.FC = () => {
                                   typeof v === 'number' ? v.toFixed(1) : String(v),
                                   name === '원본'
                                     ? `원본 · ${preprocChartData.augWaveColumnEffective}`
-                                    : `증강 · ${preprocChartData.augWaveColumnEffective}`,
+                                    : name === 'SMOTE'
+                                      ? `SMOTE 합성 · ${preprocChartData.augWaveColumnEffective}`
+                                      : `시계열 증강 · ${preprocChartData.augWaveColumnEffective}`,
                                 ]}
                                 labelFormatter={(label) => `인덱스 ≈ ${label}`}
                               />
                               {preprocChartData.columnTimeseriesWave &&
                                 preprocChartData.baseCount > 0 &&
-                                (preprocChartData.timeseriesData?.[0]?.증강 ?? 0) > 0 && (
+                                preprocChartData.timeseriesAdded > 0 && (
                                 <ReferenceLine
                                   x={preprocChartData.columnTimeseriesWave.splitX}
                                   stroke="#94a3b8"
@@ -3509,7 +3626,13 @@ const App: React.FC = () => {
                                   strokeOpacity={0.7}
                                 />
                               )}
-                              <Legend wrapperStyle={{ fontSize: 10 }} verticalAlign="bottom" />
+                              <Legend
+                                wrapperStyle={{ fontSize: 10 }}
+                                verticalAlign="bottom"
+                                formatter={(v: string) => (
+                                  v === '원본' ? '원본' : v === 'SMOTE' ? 'SMOTE 합성' : '시계열 증강'
+                                )}
+                              />
                               <Area
                                 type="monotone"
                                 dataKey="원본"
@@ -3521,15 +3644,28 @@ const App: React.FC = () => {
                                 name="원본"
                                 isAnimationActive={false}
                               />
+                              {preprocConfig.smoteEnabled && preprocChartData.smoteAdded > 0 && (
+                                <Area
+                                  type="monotone"
+                                  dataKey="SMOTE"
+                                  connectNulls={false}
+                                  stroke="#6366f1"
+                                  strokeWidth={1}
+                                  fill="#818cf8"
+                                  fillOpacity={0.42}
+                                  name="SMOTE"
+                                  isAnimationActive={false}
+                                />
+                              )}
                               <Area
                                 type="monotone"
-                                dataKey="증강"
+                                dataKey="시계열"
                                 connectNulls={false}
                                 stroke="#0284c7"
                                 strokeWidth={1}
                                 fill="#7dd3fc"
                                 fillOpacity={0.5}
-                                name="증강(추가)"
+                                name="시계열"
                                 isAnimationActive={false}
                               />
                             </ComposedChart>
@@ -3537,8 +3673,8 @@ const App: React.FC = () => {
                           </div>
                           <p className="text-[9px] text-slate-400 text-center">
                             {preprocChartData.columnTimeseriesWave?.source === 'column_sample'
-                              ? `Y축은 「${preprocChartData.augWaveColumnEffective}」 미리보기(최대 ${DATA_PREVIEW_MAX_ROWS}행) 기반 스플라인 추정에, 원본·증강 모두 시각용 미세 변동(리플·지터)을 더한 시뮬입니다. 실제 전체 시계열과 다릅니다.`
-                              : '원본 구간 뒤 증강 구간이 이어집니다. 비수치·샘플 부족 시 전역 시뮬 파형을 사용합니다.'}
+                              ? `Y축은 「${preprocChartData.augWaveColumnEffective}」 미리보기(최대 ${DATA_PREVIEW_MAX_ROWS}행) 기반 스플라인 추정이며, 증강 구간은 SMOTE·시계열을 분리해 시각용 미세 변동(리플·지터)으로 표시한 시뮬입니다.`
+                              : '원본 구간 뒤 증강 구간이 이어지며, SMOTE·시계열 레이어를 분리해 보여줍니다. 비수치·샘플 부족 시 전역 시뮬 파형을 사용합니다.'}
                           </p>
                         </div>
                       )}
@@ -3762,13 +3898,13 @@ const App: React.FC = () => {
                               <th
                                 key={i}
                                 className={`sticky top-0 z-[1] px-3 py-2 text-left font-semibold whitespace-nowrap shadow-[0_1px_0_0_rgb(226_232_240)] ${
-                                  i === dataPreview.headers.length - 1
+                                  i === selectedLabelIndex
                                     ? 'text-indigo-600 bg-indigo-50'
                                     : 'text-slate-600 bg-slate-50'
                                 }`}
                               >
                                 {h}
-                                {i === dataPreview.headers.length - 1 && (
+                                {i === selectedLabelIndex && (
                                   <span className="ml-1 text-[9px] font-normal text-indigo-400">target</span>
                                 )}
                               </th>
@@ -3861,13 +3997,13 @@ const App: React.FC = () => {
                               <th
                                 key={i}
                                 className={`sticky top-0 z-[1] px-3 py-2 text-left font-semibold whitespace-nowrap shadow-[0_1px_0_0_rgb(226_232_240)] ${
-                                  i === preprocAfterSample.headers.length - 1
+                                  i === selectedLabelIndex
                                     ? 'text-indigo-600 bg-indigo-50'
                                     : 'text-slate-600 bg-indigo-50'
                                 }`}
                               >
                                 {h}
-                                {i === preprocAfterSample.headers.length - 1 && (
+                                {i === selectedLabelIndex && (
                                   <span className="ml-1 text-[9px] font-normal text-indigo-400">encoded</span>
                                 )}
                               </th>

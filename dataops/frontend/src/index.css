@@ -143,3 +143,23 @@
   background-image: linear-gradient(90deg, #44d8f1 50%, transparent 50%);
   background-size: 15px 1px;
 }
+
+/* DAG Editor */
+.dag-canvas-bg {
+  background-image: radial-gradient(rgba(116, 119, 125, 0.04) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+.theme-light .dag-canvas-bg {
+  background-image: radial-gradient(rgba(15, 23, 42, 0.05) 1px, transparent 1px);
+}
+
+.dag-edge-animated {
+  stroke-dasharray: 8 4;
+  animation: dag-flow 0.8s linear infinite;
+}
+
+@keyframes dag-flow {
+  from { stroke-dashoffset: 24; }
+  to   { stroke-dashoffset: 0; }
+}

@@ -11,10 +11,35 @@ import {
   X,
 } from 'lucide-react';
 import { sparklinePoints, throughputSparkPaths, makeBarData } from '../utils/chart';
-import { Card, SectionHeader, Badge, ProgressBar, Metric } from './ui';
+import { Card, SectionHeader, Badge, Metric } from './ui';
 
 type TimeRange = '1H' | '6H' | '24H' | '7D';
 type AlertSeverity = 'critical' | 'warning' | 'info';
+
+interface StoredPipelineInstance {
+  id: string;
+  name: string;
+  sourceCount: number;
+  ruleCount: number;
+  destinationCount: number;
+  scheduleMode: 'streaming' | 'batch';
+  createdAt: string;
+}
+
+interface StoredSource {
+  id: string;
+  label: string;
+  sub: string;
+  tag: string;
+  active: boolean;
+}
+
+interface StoredDestination {
+  id: string;
+  label: string;
+  type: string;
+  active: boolean;
+}
 
 interface AlertItem {
   id: string;
@@ -24,10 +49,11 @@ interface AlertItem {
 }
 
 const INITIAL_ALERTS: AlertItem[] = [
-  { id: 'AL-992', severity: 'critical', msg: 'EQ-PUMP-03 PT100 온도 초과 (92.4°C > 85°C 임계값)', time: '2m ago' },
-  { id: 'AL-991', severity: 'warning',  msg: 'EQ-MOTOR-07 3상 전류 불균형 감지 (R/S/T 편차 > 5%)', time: '18m ago' },
-  { id: 'AL-990', severity: 'warning',  msg: 'EQ-COMP-02 진동(Vibra) 이상 — 0.18g (정상 범위 이탈)', time: '35m ago' },
-  { id: 'AL-989', severity: 'info',     msg: '덕산공장 센서 파이프라인 정기 체크포인트 완료', time: '1h ago' },
+  { id: 'AL-992', severity: 'critical', msg: 'EQ-MOTOR-07 VoltR 전압강하 감지 (198.4V < 200V 임계값)', time: '2m ago' },
+  { id: 'AL-991', severity: 'critical', msg: 'EQ-PUMP-03 Ground 누전 전류 초과 (6.2A > 5A 임계값)', time: '7m ago' },
+  { id: 'AL-990', severity: 'warning',  msg: 'EQ-MOTOR-07 3상 전류 불균형 — currR/S/T 편차 5.8%', time: '18m ago' },
+  { id: 'AL-989', severity: 'warning',  msg: 'EQ-COMP-02 PT100 온도 상승 추세 (81.2°C, 임계값 85°C)', time: '32m ago' },
+  { id: 'AL-988', severity: 'info',     msg: '덕산 전력 파이프라인 체크포인트 완료 (TX-99238-K-82)', time: '1h ago' },
 ];
 
 const TIME_LABELS: Record<TimeRange, string[]> = {
@@ -62,10 +88,90 @@ const utilizationPercent = (value: string): number | null => {
 
 const TIME_RANGE_OPTIONS: TimeRange[] = ['1H', '6H', '24H', '7D'];
 
+function readPipelineStorage() {
+  const instances = JSON.parse(localStorage.getItem('pipeline-storage-instances') || '[]') as StoredPipelineInstance[];
+  const sources = JSON.parse(localStorage.getItem('pipeline-storage-sources') || '[]') as StoredSource[];
+  const destinations = JSON.parse(localStorage.getItem('pipeline-storage-destinations') || '[]') as StoredDestination[];
+  return { instances, sources, destinations };
+}
+
+// 전력 품질 이상 메시지 풀 (덕산 전력 데이터 기반)
+const POWER_ALERT_POOL = [
+  { severity: 'critical' as AlertSeverity, msg: 'EQ-MOTOR-07 VoltR 전압강하 감지 (198.4V < 200V 임계값)' },
+  { severity: 'critical' as AlertSeverity, msg: 'EQ-PUMP-03 Ground 누전 전류 초과 (6.2A > 5A 임계값)' },
+  { severity: 'warning'  as AlertSeverity, msg: 'EQ-MOTOR-07 3상 전류 불균형 — currR/S/T 편차 5.8%' },
+  { severity: 'warning'  as AlertSeverity, msg: 'EQ-COMP-02 PT100 온도 상승 추세 (81.2°C, 임계값 85°C)' },
+  { severity: 'warning'  as AlertSeverity, msg: 'EQ-PUMP-03 VoltS/VoltT 불균형 감지 (편차 > 3V)' },
+  { severity: 'warning'  as AlertSeverity, msg: 'EQ-MOTOR-07 curr 최대 허용치 근접 (241A / 250A)' },
+];
+
+function buildAlertsFromPipelines(instances: StoredPipelineInstance[], sources: StoredSource[]): AlertItem[] {
+  if (instances.length === 0) return INITIAL_ALERTS;
+  const alerts: AlertItem[] = [];
+  let alertId = 0;
+
+  // streaming 파이프라인마다 전력 수집 체크포인트 INFO 알림
+  instances.filter(p => p.scheduleMode === 'streaming').forEach(p => {
+    alerts.push({
+      id: `AL-${1000 + alertId++}`,
+      severity: 'info',
+      msg: `${p.name} — 덕산 전력 스트리밍 체크포인트 완료`,
+      time: '방금 전',
+    });
+  });
+
+  // inactive 소스 → 전력 수집 중단 WARNING
+  sources.filter(s => !s.active).forEach(s => {
+    alerts.push({
+      id: `AL-${1000 + alertId++}`,
+      severity: 'warning',
+      msg: `${s.label} 전력 데이터 수집 중단 — 소스 연결 확인 필요`,
+      time: '3분 전',
+    });
+  });
+
+  // 파이프라인 룰 수가 많으면 → 전력 품질 이상 알림 추가
+  const maxRules = Math.max(...instances.map(p => p.ruleCount), 0);
+  if (maxRules >= 2) {
+    const poolPick = POWER_ALERT_POOL.slice(0, Math.min(2, maxRules - 1));
+    poolPick.forEach((item, i) => {
+      alerts.push({
+        id: `AL-${900 + i}`,
+        severity: item.severity,
+        msg: item.msg,
+        time: `${(i + 1) * 8}분 전`,
+      });
+    });
+  }
+
+  if (alerts.length < 2) {
+    alerts.push(...INITIAL_ALERTS.slice(0, 2 - alerts.length));
+  }
+  return alerts.slice(0, 6);
+}
+
 export const MonitoringView = () => {
   const [timeRange, setTimeRange] = useState<TimeRange>('1H');
   const [alerts, setAlerts] = useState<AlertItem[]>(INITIAL_ALERTS);
   const [throughputTick, setThroughputTick] = useState(0);
+  const [pipelineCount, setPipelineCount] = useState(0);
+
+  // Sync pipeline storage and update alerts + metrics
+  useEffect(() => {
+    const syncFromPipeline = () => {
+      const { instances, sources } = readPipelineStorage();
+      const newAlerts = buildAlertsFromPipelines(instances, sources);
+      setAlerts(newAlerts);
+      setPipelineCount(instances.length);
+    };
+    syncFromPipeline();
+    window.addEventListener('pipeline-storage-updated', syncFromPipeline);
+    window.addEventListener('focus', syncFromPipeline);
+    return () => {
+      window.removeEventListener('pipeline-storage-updated', syncFromPipeline);
+      window.removeEventListener('focus', syncFromPipeline);
+    };
+  }, []);
 
   useEffect(() => { setThroughputTick(0); }, [timeRange]);
 
@@ -74,7 +180,9 @@ export const MonitoringView = () => {
     return () => window.clearInterval(id);
   }, [timeRange]);
 
-  const health = HEALTH_BY_RANGE[timeRange];
+  // Scale health based on pipeline activity (more pipelines = slight degradation)
+  const baseHealth = HEALTH_BY_RANGE[timeRange];
+  const health = Math.max(70, baseHealth - Math.min(15, pipelineCount * 2));
   const circumference = 2 * Math.PI * 88;
 
   const bars = useMemo(() => {
@@ -105,11 +213,38 @@ export const MonitoringView = () => {
 
   const dismissAlert = (id: string) => setAlerts(prev => prev.filter(a => a.id !== id));
 
+  // Scale resource metrics based on pipeline count
+  const cpuBase = Math.min(95, 42 + pipelineCount * 8);
+  const sessionBase = 12.4 + pipelineCount * 1.5;
+  const storageBase = 1.2 + pipelineCount * 0.3;
+
+  // Live animated values — all 4 items jitter in real time via throughputTick
+  const liveResource = useMemo(() => {
+    const t = throughputTick;
+    const cpu     = Math.min(97, Math.max(28, cpuBase + 4 * Math.sin(t * 0.13) + 2.5 * Math.cos(t * 0.31)));
+    const mem     = Math.min(88, Math.max(54, 68 + 2.5 * Math.sin(t * 0.09 + 1.2) + 1.8 * Math.cos(t * 0.22)));
+    const storage = Math.max(0.4, storageBase + 0.5 * Math.sin(t * 0.17 + 0.8) + 0.3 * Math.cos(t * 0.27));
+    const sess    = Math.max(8, sessionBase + 1.2 * Math.sin(t * 0.14 + 2.1) + 0.9 * Math.cos(t * 0.19));
+
+    // Rolling 12-point sparkline series computed from tick offsets
+    const wave = (base: number, amp: number, freq: number, phase: number) =>
+      Array.from({ length: 12 }, (_, k) =>
+        Math.max(0.1, base + amp * Math.sin(freq * (t - 11 + k) + phase))
+      );
+
+    return {
+      cpu,   cpuSeries:     wave(cpuBase, 5, 0.13, 0),
+      mem,   memSeries:     wave(68,      3, 0.09, 1.2),
+      storage, storageSeries: wave(storageBase, 0.6, 0.17, 0.8),
+      sess,  sessSeries:    wave(sessionBase,  1.4, 0.14, 2.1),
+    };
+  }, [throughputTick, cpuBase, storageBase, sessionBase]);
+
   const resourceItems = [
-    { label: 'CPU Cluster Load',  value: '42%',   icon: Zap,       data: [40, 35, 45, 42, 38, 42] },
-    { label: 'Memory Allocation', value: '68%',   icon: BarChart3, data: [60, 62, 65, 68, 67, 68] },
-    { label: 'Storage I/O',       value: '1.2 GB/s', icon: Activity,  data: [8, 10, 14, 12, 11, 12], vizTone: 'accent' as const },
-    { label: 'Active Sessions',   value: '12.4k', icon: PieChart,  data: [10, 11, 13, 12, 12, 12.4], vizTone: 'neutral' as const, sessionScale: true as const },
+    { label: 'CPU Cluster Load',  icon: Zap,      headline: `${Math.round(liveResource.cpu)}%`,          series: liveResource.cpuSeries,     pct: Math.round(liveResource.cpu) },
+    { label: 'Memory Allocation', icon: BarChart3, headline: `${Math.round(liveResource.mem)}%`,          series: liveResource.memSeries,     pct: Math.round(liveResource.mem) },
+    { label: 'Storage I/O',       icon: Activity,  headline: `${liveResource.storage.toFixed(1)} GB/s`,   series: liveResource.storageSeries, pct: null },
+    { label: 'Active Sessions',   icon: PieChart,  headline: `${liveResource.sess.toFixed(1)}k`,          series: liveResource.sessSeries,    pct: null },
   ];
 
   return (
@@ -309,80 +444,78 @@ export const MonitoringView = () => {
         </Card>
 
         {/* Resource Usage */}
-        <div className="col-span-12 lg:col-span-8 grid grid-cols-2 gap-4 items-start">
+        <div className="col-span-12 lg:col-span-8 grid grid-cols-2 gap-3 items-stretch">
           {resourceItems.map((item, i) => {
-            const pct = utilizationPercent(item.value);
-            const liveSeries =
-              pct === null
-                ? item.data.map((v, j) =>
-                    Math.max(0.01, v + 0.32 * Math.sin(throughputTick * 0.11 + i * 0.73 + j * 0.52))
-                  )
-                : item.data;
-            const livePeak = Math.max(...liveSeries, 1e-6);
-            const { areaD, lineD } = pct === null ? throughputSparkPaths(liveSeries) : { areaD: '', lineD: '' };
-            const vizTone = 'vizTone' in item && item.vizTone ? item.vizTone : 'accent';
-            const sessionK = 'sessionScale' in item && item.sessionScale ? liveSeries[liveSeries.length - 1]! : null;
-            const headline = sessionK !== null ? `${sessionK.toFixed(1)}k` : item.value;
+            const W = 100; const H = 36; const padX = 0; const padY = 3;
+            const innerH = H - padY * 2;
+            const n = item.series.length;
+            const min = Math.min(...item.series);
+            const max = Math.max(...item.series);
+            const range = max - min || 1;
+
+            // min-max 정규화 → 진폭이 차트 높이 전체를 채움
+            const pts = item.series.map((v, j) => {
+              const x = n <= 1 ? 0 : (j / (n - 1)) * (W - padX * 2) + padX;
+              const y = H - padY - ((v - min) / range) * innerH;
+              return { x, y };
+            });
+            const lineD = pts.map((p, j) => `${j === 0 ? 'M' : 'L'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+            const areaD = `${lineD} L${W} ${H} L0 ${H}Z`;
 
             return (
-              <Card key={i} className="flex flex-col">
-                <div className="flex justify-between items-start gap-3 shrink-0">
-                  <div className="w-9 h-9 shrink-0 rounded-lg bg-primary flex items-center justify-center border border-white/5">
-                    <item.icon className="w-[18px] h-[18px] text-accent" />
+              <Card key={i} className="flex h-full flex-col !p-4 overflow-hidden">
+                {/* Header */}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-6 h-6 shrink-0 rounded-md bg-primary flex items-center justify-center border border-white/5">
+                      <item.icon className="w-3 h-3 text-accent" />
+                    </div>
+                    <p className="text-[10px] font-medium text-surface-muted uppercase tracking-wide truncate">{item.label}</p>
                   </div>
-                  <div className="text-right min-w-0">
-                    <p className="text-[11px] font-medium text-surface-muted uppercase tracking-wide mb-1">{item.label}</p>
-                    <motion.p
-                      className="text-lg sm:text-xl font-bold text-text-bright tabular-nums leading-tight"
-                      initial={false}
-                      animate={{ opacity: 1 }}
-                      transition={{ duration: 0.25 }}
-                    >
-                      {headline}
-                    </motion.p>
-                  </div>
+                  <motion.span
+                    className="text-sm font-bold text-text-bright tabular-nums shrink-0"
+                    initial={{ opacity: 0.5 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    {item.headline}
+                  </motion.span>
                 </div>
-                <div className="mt-3 w-full shrink-0">
-                  {pct !== null ? (
-                    <div className="w-full space-y-2.5" title="현재 이용률">
-                      <ProgressBar value={pct} height="h-3.5" color="bg-accent/55" />
-                      <svg className="w-full h-11 text-accent/40" viewBox="0 0 100 22" preserveAspectRatio="none" aria-hidden>
-                        <polyline
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.35"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          vectorEffect="non-scaling-stroke"
-                          points={sparklinePoints(item.data)}
-                        />
-                      </svg>
-                    </div>
-                  ) : (
-                    <div
-                      className="w-full space-y-2.5"
-                      title={vizTone === 'neutral' ? '동시 세션 수 샘플 추세(데모)' : '스토리지 처리량 샘플 추세(데모)'}
-                    >
-                      <svg className="w-full h-[5.5rem]" viewBox="0 0 100 32" preserveAspectRatio="none" aria-hidden>
-                        <line x1="0" y1="31.5" x2="100" y2="31.5" className="stroke-white/10" strokeWidth="0.5" vectorEffect="non-scaling-stroke" />
-                        <path d={areaD} className={vizTone === 'neutral' ? 'fill-white/5' : 'fill-accent/12'} />
-                        <path
-                          d={lineD}
-                          fill="none"
-                          className={vizTone === 'neutral' ? 'stroke-white/35' : 'stroke-accent/45'}
-                          strokeWidth="1.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          vectorEffect="non-scaling-stroke"
-                        />
-                      </svg>
-                      <ProgressBar
-                        value={Math.min(100, (liveSeries[liveSeries.length - 1]! / livePeak) * 100)}
-                        height="h-2"
-                        color={vizTone === 'neutral' ? 'bg-white/30' : 'bg-accent/35'}
+
+                {/* Area sparkline — min-max normalized, full visual range */}
+                <div className="my-auto flex w-full flex-col gap-3 py-2">
+                  <svg className="w-full h-14" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden>
+                    <defs>
+                      <linearGradient id={`rg-${i}`} x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="currentColor" stopOpacity="0.25" />
+                        <stop offset="100%" stopColor="currentColor" stopOpacity="0.02" />
+                      </linearGradient>
+                    </defs>
+                    {/* area fill */}
+                    <path d={areaD} fill={`url(#rg-${i})`} className="text-accent" />
+                    {/* line */}
+                    <path
+                      d={lineD}
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      vectorEffect="non-scaling-stroke"
+                      className="text-accent"
+                    />
+                    {/* current value dot */}
+                    {pts.length > 0 && (
+                      <circle
+                        cx={pts[pts.length - 1]!.x.toFixed(1)}
+                        cy={pts[pts.length - 1]!.y.toFixed(1)}
+                        r="2"
+                        fill="currentColor"
+                        className="text-accent"
                       />
-                    </div>
-                  )}
+                    )}
+                  </svg>
+
                 </div>
               </Card>
             );
